@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin_ext: ""
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            bin_ext: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin_ext: ".exe"
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin_ext: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Prepare artifact
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="pgcopy"
+          VERSION="${GITHUB_REF_NAME}"
+          TARGET="${{ matrix.target }}"
+          EXT="${{ matrix.bin_ext }}"
+          OUT="dist/${BIN}-${VERSION}-${TARGET}${EXT}"
+          mkdir -p dist
+          cp "target/${TARGET}/release/${BIN}${EXT}" "${OUT}"
+          if [ "${EXT}" = "" ]; then
+            chmod +x "${OUT}"
+          fi
+
+          if [ "${EXT}" = ".exe" ]; then
+            ARCHIVE="dist/${BIN}-${VERSION}-${TARGET}.zip"
+            (
+              cd dist
+              7z a "$(basename "${ARCHIVE}")" "$(basename "${OUT}")"
+            )
+          else
+            ARCHIVE="dist/${BIN}-${VERSION}-${TARGET}.tar.gz"
+            tar -C dist -czf "${ARCHIVE}" "$(basename "${OUT}")"
+          fi
+
+          rm -f "${OUT}"
+          echo "archive=${ARCHIVE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ steps.prepare.outputs.archive }}
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
