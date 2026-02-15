@@ -25,17 +25,47 @@ pub fn target_config(overrides: &ConnectionOverrides) -> Result<Config> {
 }
 
 fn build_default(overrides: &ConnectionOverrides) -> Result<Config> {
-    let host = resolve_required_string(overrides.host.as_deref(), "PGHOST", "--host")?;
+    let mut missing_required = Vec::new();
+
+    let host = resolve_required_string(
+        overrides.host.as_deref(),
+        "PGHOST",
+        "--host",
+        &mut missing_required,
+    )?;
     let port = resolve_port(overrides.port)?;
-    let dbname = resolve_required_string(overrides.dbname.as_deref(), "PGDATABASE", "--dbname")?;
-    let user = resolve_required_string(overrides.user.as_deref(), "PGUSER", "--username")?;
+    let dbname = resolve_required_string(
+        overrides.dbname.as_deref(),
+        "PGDATABASE",
+        "--dbname",
+        &mut missing_required,
+    )?;
+    let user = resolve_required_string(
+        overrides.user.as_deref(),
+        "PGUSER",
+        "--username",
+        &mut missing_required,
+    )?;
     let password = resolve_optional_string(overrides.password.as_deref(), "PGPASSWORD")?;
 
+    if !missing_required.is_empty() {
+        bail!(
+            "missing PostgreSQL connection parameters: {} (set corresponding CLI flags or env variables)",
+            missing_required.join(", ")
+        );
+    }
+
     let mut config = Config::new();
-    config.host(&host);
+    config.host(
+        &host.expect("host must be resolved when required connection parameter check passes"),
+    );
     config.port(port);
-    config.dbname(&dbname);
-    config.user(&user);
+    config.dbname(
+        &dbname.expect("dbname must be resolved when required connection parameter check passes"),
+    );
+    config.user(
+        &user.expect("user must be resolved when required connection parameter check passes"),
+    );
     if let Some(password) = password.as_deref() {
         config.password(password);
     }
@@ -47,16 +77,18 @@ fn resolve_required_string(
     cli_value: Option<&str>,
     env_name: &str,
     cli_flag: &str,
-) -> Result<String> {
+    missing_required: &mut Vec<String>,
+) -> Result<Option<String>> {
     if let Some(value) = normalize_non_empty(cli_value) {
-        return Ok(value);
+        return Ok(Some(value));
     }
 
     if let Some(value) = normalize_non_empty(read_env(env_name)?.as_deref()) {
-        return Ok(value);
+        return Ok(Some(value));
     }
 
-    bail!("missing PostgreSQL connection parameter: set {cli_flag} or {env_name}")
+    missing_required.push(format!("{cli_flag}/{env_name}"));
+    Ok(None)
 }
 
 fn resolve_optional_string(cli_value: Option<&str>, env_name: &str) -> Result<Option<String>> {

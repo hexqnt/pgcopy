@@ -11,6 +11,7 @@ mod compat;
 mod copy_stream;
 mod load;
 mod parallel;
+mod progress;
 mod replace_tx;
 mod sequences;
 mod stream;
@@ -32,6 +33,7 @@ pub async fn run(
     concurrency: usize,
     bundle_password: Option<&str>,
     dsn_overrides: &env_dsn::ConnectionOverrides,
+    progress_enabled: bool,
 ) -> Result<()> {
     if concurrency == 0 {
         bail!("import concurrency must be >= 1");
@@ -50,6 +52,7 @@ pub async fn run(
             &client,
             mode,
             target_version_num,
+            progress_enabled,
         )
         .await?;
         return Ok(());
@@ -65,8 +68,15 @@ pub async fn run(
 
     let manifest = bundle_io::read_manifest_from_dir(scratch.path())?;
     compat::validate_data_compatibility(&manifest, target_version_num)?;
-    parallel::import_objects_parallel(&target_config, scratch.path(), &manifest, mode, concurrency)
-        .await?;
+    parallel::import_objects_parallel(
+        &target_config,
+        scratch.path(),
+        &manifest,
+        mode,
+        concurrency,
+        progress_enabled,
+    )
+    .await?;
 
     Ok(())
 }

@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 use crate::config::{Config, ObjectConfig};
 use crate::manifest::ManifestObject;
@@ -15,8 +15,12 @@ pub(super) struct ExportProgress {
 }
 
 impl ExportProgress {
-    pub(super) fn new(config: &Config) -> Self {
-        let multi = MultiProgress::new();
+    pub(super) fn new(config: &Config, enabled: bool) -> Self {
+        let multi = if enabled {
+            MultiProgress::new()
+        } else {
+            MultiProgress::with_draw_target(ProgressDrawTarget::hidden())
+        };
 
         let overall = multi.add(ProgressBar::new((config.objects.len() + 1) as u64));
         overall.set_style(

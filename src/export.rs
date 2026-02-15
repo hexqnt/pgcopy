@@ -27,11 +27,12 @@ pub async fn run(
     cli_concurrency: Option<usize>,
     bundle_password: Option<&str>,
     dsn_overrides: &env_dsn::ConnectionOverrides,
+    progress_enabled: bool,
 ) -> Result<()> {
     let config = config::load(config_path)?;
     let concurrency = resolve_export_concurrency(cli_concurrency, &config.general)?;
     let password = crypto::resolve_bundle_password(bundle_password)?;
-    let progress = ExportProgress::new(&config);
+    let progress = ExportProgress::new(&config, progress_enabled);
 
     let source_config = env_dsn::source_config(dsn_overrides)?;
     let client = pg::connect(&source_config).await?;

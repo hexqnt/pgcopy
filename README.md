@@ -18,9 +18,9 @@
 ## Команды
 
 ```bash
-pgcopy export --config <path/to/config.toml> --out <path/to/bundle> [--concurrency N]
-pgcopy import --in <path/to/bundle> [--mode replace|append] [--concurrency N]
-pgcopy info --in <path/to/bundle> [--format text|json] [--objects]
+pgcopy export --config <path/to/config.toml> --out <path/to/bundle> [--concurrency N] [--quiet] [--no-progress]
+pgcopy import --in <path/to/bundle> [--mode replace|append] [--concurrency N] [--quiet] [--no-progress]
+pgcopy info --in <path/to/bundle> [--format text|json] [--objects] [--quiet]
 ```
 
 `--mode` для импорта:
@@ -37,6 +37,11 @@ pgcopy info --in <path/to/bundle> [--format text|json] [--objects]
 - `--format text` (по умолчанию): человекочитаемый вывод.
 - `--format json`: машинночитаемый вывод.
 - `--objects`: печатает метаданные по каждому объекту из manifest.
+
+Служебные флаги:
+
+- `--quiet`: отключает служебный вывод (баннер запуска и progress bars).
+- `--no-progress`: отключает только progress bars (удобно для CI-логов).
 
 ## Приоритет источников параметров
 

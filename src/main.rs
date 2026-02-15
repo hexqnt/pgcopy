@@ -31,6 +31,18 @@ Bundle encryption password can be provided via --password or environment variabl
 Run `pgcopy export --help`, `pgcopy import --help`, or `pgcopy info --help` for command-specific examples."
 )]
 struct Cli {
+    #[arg(
+        long,
+        global = true,
+        help = "Suppress non-essential output (startup banner and progress bars)"
+    )]
+    quiet: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "Disable progress bars (useful for CI logs)"
+    )]
+    no_progress: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -197,17 +209,20 @@ Encrypted bundle:\n\
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    eprintln!("pgcopy v{APP_VERSION} starting");
+    let cli = Cli::parse();
+    let progress_enabled = !cli.quiet && !cli.no_progress;
+
+    if !cli.quiet {
+        eprintln!("pgcopy v{APP_VERSION} starting");
+    }
 
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".to_owned().into()),
+                .unwrap_or_else(|_| if cli.quiet { "warn" } else { "info" }.to_owned().into()),
         )
         .without_time()
         .init();
-
-    let cli = Cli::parse();
 
     match cli.command {
         Commands::Export {
@@ -224,6 +239,7 @@ async fn main() -> Result<()> {
                 concurrency,
                 password.as_deref(),
                 &dsn_overrides,
+                progress_enabled,
             )
             .await?
         }
@@ -241,6 +257,7 @@ async fn main() -> Result<()> {
                 concurrency,
                 password.as_deref(),
                 &dsn_overrides,
+                progress_enabled,
             )
             .await?
         }

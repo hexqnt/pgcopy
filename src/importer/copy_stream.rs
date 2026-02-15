@@ -17,7 +17,7 @@ pub async fn copy_data_in_file(
     target_name: &str,
     effective_columns: &[String],
     data_format: DataFormat,
-) -> Result<()> {
+) -> Result<u64> {
     let copy_sql = pg::copy_in_sql(target_schema, target_name, effective_columns, data_format);
     let copy_sink = client
         .copy_in(&copy_sql)
@@ -48,13 +48,13 @@ pub async fn copy_data_in_file(
             .context("failed to stream chunk to COPY IN")?;
     }
 
-    copy_sink
+    let inserted_rows = copy_sink
         .as_mut()
         .finish()
         .await
         .context("failed to finish COPY IN")?;
 
-    Ok(())
+    Ok(inserted_rows)
 }
 
 /// Загружает данные в target через `COPY FROM STDIN` из произвольного `Read`.
@@ -65,7 +65,7 @@ pub async fn copy_data_in_reader<R: Read>(
     target_name: &str,
     effective_columns: &[String],
     data_format: DataFormat,
-) -> Result<()> {
+) -> Result<u64> {
     let copy_sql = pg::copy_in_sql(target_schema, target_name, effective_columns, data_format);
     let copy_sink = client
         .copy_in(&copy_sql)
@@ -90,11 +90,11 @@ pub async fn copy_data_in_reader<R: Read>(
             .context("failed to stream chunk to COPY IN")?;
     }
 
-    copy_sink
+    let inserted_rows = copy_sink
         .as_mut()
         .finish()
         .await
         .context("failed to finish COPY IN")?;
 
-    Ok(())
+    Ok(inserted_rows)
 }
