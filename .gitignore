@@ -1,3 +1,5 @@
 /target
 config.toml
+pg_init.sh
+run.sh
 *.tar.zst

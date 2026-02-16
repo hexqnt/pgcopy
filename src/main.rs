@@ -1,7 +1,9 @@
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
+use tracing_subscriber::filter::Directive;
 
 mod bundle_io;
 mod config;
@@ -12,6 +14,7 @@ mod importer;
 mod info;
 mod manifest;
 mod pg;
+mod progress;
 mod select_dsl;
 mod sql;
 mod types;
@@ -207,20 +210,43 @@ Encrypted bundle:\n\
     },
 }
 
+fn print_startup_banner() {
+    let title = format!("pgcopy v{APP_VERSION}");
+    let subtitle = "PostgreSQL bundle export/import";
+
+    if stderr_supports_color() {
+        eprintln!("\x1b[1;36m==>\x1b[0m \x1b[1m{title}\x1b[0m \x1b[2m| {subtitle}\x1b[0m");
+    } else {
+        eprintln!("==> {title} | {subtitle}");
+    }
+}
+
+fn stderr_supports_color() -> bool {
+    std::io::stderr().is_terminal()
+        && std::env::var_os("NO_COLOR").is_none()
+        && std::env::var("TERM").is_ok_and(|term| term != "dumb")
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let progress_enabled = !cli.quiet && !cli.no_progress;
 
     if !cli.quiet {
-        eprintln!("pgcopy v{APP_VERSION} starting");
+        print_startup_banner();
     }
 
+    let default_filter = if cli.quiet { "warn" } else { "info" };
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| default_filter.to_owned().into())
+        .add_directive(
+            "tokio_postgres=warn"
+                .parse::<Directive>()
+                .expect("valid tracing directive"),
+        );
+
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| if cli.quiet { "warn" } else { "info" }.to_owned().into()),
-        )
+        .with_env_filter(env_filter)
         .without_time()
         .init();
 
