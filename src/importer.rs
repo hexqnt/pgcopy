@@ -4,7 +4,6 @@ use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 
 use crate::bundle_io;
-use crate::env_dsn;
 use crate::pg;
 
 mod compat;
@@ -32,7 +31,7 @@ pub async fn run(
     mode: ImportMode,
     concurrency: usize,
     bundle_password: Option<&str>,
-    dsn_overrides: &env_dsn::ConnectionOverrides,
+    target_config: tokio_postgres::Config,
     progress_enabled: bool,
 ) -> Result<()> {
     if concurrency == 0 {
@@ -40,7 +39,6 @@ pub async fn run(
     }
 
     let access = bundle_io::resolve_access(bundle_path, bundle_password)?;
-    let target_config = env_dsn::target_config(dsn_overrides)?;
     let client = pg::connect(&target_config).await?;
     let target_version_num = pg::server_version_num(&client).await?;
 

@@ -7,7 +7,6 @@ use tempfile::TempDir;
 use crate::bundle_io;
 use crate::config::{self, Config, GeneralConfig, ObjectConfig};
 use crate::crypto;
-use crate::env_dsn;
 use crate::manifest::{Manifest, ManifestObject};
 use crate::pg;
 
@@ -26,7 +25,7 @@ pub async fn run(
     out_path: &Path,
     cli_concurrency: Option<usize>,
     bundle_password: Option<&str>,
-    dsn_overrides: &env_dsn::ConnectionOverrides,
+    source_config: tokio_postgres::Config,
     progress_enabled: bool,
 ) -> Result<()> {
     let config = config::load(config_path)?;
@@ -34,7 +33,6 @@ pub async fn run(
     let password = crypto::resolve_bundle_password(bundle_password)?;
     let progress = ExportProgress::new(&config, progress_enabled);
 
-    let source_config = env_dsn::source_config(dsn_overrides)?;
     let client = pg::connect(&source_config).await?;
 
     let source_pg_version_num = pg::server_version_num(&client).await?;
