@@ -75,8 +75,7 @@ pub async fn copy_data_in_reader<R: Read>(
 
     let mut buffer = vec![0_u8; 64 * 1024];
     loop {
-        let read = reader
-            .read(&mut buffer)
+        let read = tokio::task::block_in_place(|| reader.read(&mut buffer))
             .context("failed to read streaming data from bundle")?;
 
         if read == 0 {

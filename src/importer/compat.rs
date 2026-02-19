@@ -84,3 +84,62 @@ pub(super) async fn validate_existing_table_compatibility(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::validate_data_compatibility;
+    use crate::manifest::{Manifest, ManifestObject};
+    use crate::types::DataFormat;
+
+    fn manifest_for_compat(data_format: DataFormat, source_pg_version_num: i32) -> Manifest {
+        Manifest {
+            format_version: 1,
+            created_at: "2026-02-19T10:00:00Z".to_owned(),
+            source_fingerprint: Some("database=app user=app".to_owned()),
+            source_pg_version_num,
+            data_format,
+            consistent_snapshot: true,
+            objects: vec![ManifestObject {
+                kind: "table".to_owned(),
+                source_schema: "public".to_owned(),
+                source_name: "orders".to_owned(),
+                target_schema: "archive".to_owned(),
+                target_name: "orders".to_owned(),
+                source_select: "select * from public.orders".to_owned(),
+                normalized_select: "SELECT \"id\" FROM \"public\".\"orders\"".to_owned(),
+                ddl_path: "ddl/0001__public.orders.sql".to_owned(),
+                data_path: "data/0001__public.orders.copybin".to_owned(),
+                effective_columns: vec!["id".to_owned()],
+                effective_column_types: vec!["bigint".to_owned()],
+                column_projection: "*".to_owned(),
+                row_estimate: Some(10),
+            }],
+        }
+    }
+
+    #[test]
+    fn binary_compatibility_passes_for_same_major() {
+        let manifest = manifest_for_compat(DataFormat::Binary, 150002);
+        validate_data_compatibility(&manifest, 150099)
+            .expect("binary format should be compatible on same major version");
+    }
+
+    #[test]
+    fn binary_compatibility_fails_for_different_major() {
+        let manifest = manifest_for_compat(DataFormat::Binary, 140012);
+        let error = validate_data_compatibility(&manifest, 150001)
+            .expect_err("binary format must fail across major versions");
+        assert!(
+            error
+                .to_string()
+                .contains("binary COPY compatibility check failed")
+        );
+    }
+
+    #[test]
+    fn csv_compatibility_ignores_major_version_difference() {
+        let manifest = manifest_for_compat(DataFormat::Csv, 140012);
+        validate_data_compatibility(&manifest, 160003)
+            .expect("csv format should ignore major version difference");
+    }
+}

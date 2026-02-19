@@ -140,13 +140,16 @@ Encrypted bundle:\n\
     #[command(
         about = "Import bundle into target PostgreSQL database",
         long_about = "Reads bundle file, validates compatibility, creates target tables, and loads data\n\
-into the target PostgreSQL database. Parallel import concurrency is configured via --concurrency."
+into the target PostgreSQL database. Use --ddl-only to create tables without loading rows.\n\
+Parallel import concurrency is configured via --concurrency."
     )]
     #[command(after_help = "Example:\n\
   pgcopy import --in ./bundle.tar.zst --mode replace \\\n\
     --host 127.0.0.1 --port 5432 --dbname app_db --username app_user --pgpassword secret\n\n\
 Encrypted bundle:\n\
-  pgcopy import --in ./bundle.enc --mode replace --password strong-passphrase")]
+  pgcopy import --in ./bundle.enc --mode replace --password strong-passphrase\n\n\
+DDL only:\n\
+  pgcopy import --in ./bundle.tar.zst --mode replace --ddl-only")]
     Import {
         #[arg(
             long = "in",
@@ -169,6 +172,11 @@ Encrypted bundle:\n\
             help = "Import concurrency (number of objects processed in parallel)"
         )]
         concurrency: usize,
+        #[arg(
+            long,
+            help = "Create target tables from bundle DDL only (skip data loading)"
+        )]
+        ddl_only: bool,
         #[arg(
             long,
             value_name = "PASSWORD",
@@ -249,6 +257,7 @@ fn print_import_startup_details(
     input_path: &Path,
     mode: importer::ImportMode,
     concurrency: usize,
+    ddl_only: bool,
     target_config: &PgConfig,
     color: bool,
 ) {
@@ -261,6 +270,7 @@ fn print_import_startup_details(
     print_startup_detail("bundle", &input_path.display().to_string(), color);
     print_startup_detail("mode", mode, color);
     print_startup_detail("concurrency", &concurrency.to_string(), color);
+    print_startup_detail("ddl_only", if ddl_only { "yes" } else { "no" }, color);
 }
 
 fn print_info_startup_details(
@@ -380,6 +390,7 @@ async fn main() -> Result<()> {
             input,
             mode,
             concurrency,
+            ddl_only,
             password,
             connection,
         } => {
@@ -390,6 +401,7 @@ async fn main() -> Result<()> {
                     &input,
                     mode,
                     concurrency,
+                    ddl_only,
                     &target_config,
                     startup_color,
                 );
@@ -398,6 +410,7 @@ async fn main() -> Result<()> {
                 &input,
                 mode,
                 concurrency,
+                ddl_only,
                 password.as_deref(),
                 target_config,
                 progress_enabled,

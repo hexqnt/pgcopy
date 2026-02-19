@@ -25,7 +25,7 @@
 
 ```bash
 pgcopy export --config <path/to/config.toml> --out <path/to/bundle> [--concurrency N] [--quiet] [--no-progress]
-pgcopy import --in <path/to/bundle> [--mode replace|append] [--concurrency N] [--quiet] [--no-progress]
+pgcopy import --in <path/to/bundle> [--mode replace|append] [--concurrency N] [--ddl-only] [--quiet] [--no-progress]
 pgcopy info --in <path/to/bundle> [--format text|json] [--objects] [--quiet]
 ```
 
@@ -35,6 +35,7 @@ pgcopy info --in <path/to/bundle> [--format text|json] [--objects] [--quiet]
   Операция выполняется атомарно на уровне объекта (`BEGIN/COMMIT`): при ошибке во время `replace`
   изменения по этому объекту откатываются (`ROLLBACK`).
 - `append`: если таблица есть, проверяет совместимость и дозаписывает данные.
+- `--ddl-only`: выполняет только DDL-часть импорта (создание/подготовка таблиц), без загрузки данных.
 
 Поддерживается также алиас `--concurency` (без второй `r`) для `--concurrency`.
 

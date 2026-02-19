@@ -30,6 +30,7 @@ pub async fn run(
     bundle_path: &Path,
     mode: ImportMode,
     concurrency: usize,
+    ddl_only: bool,
     bundle_password: Option<&str>,
     target_config: tokio_postgres::Config,
     progress_enabled: bool,
@@ -40,15 +41,21 @@ pub async fn run(
 
     let access = bundle_io::resolve_access(bundle_path, bundle_password)?;
     let client = pg::connect(&target_config).await?;
-    let target_version_num = pg::server_version_num(&client).await?;
+    let target_version_num = if ddl_only {
+        0
+    } else {
+        pg::server_version_num(&client).await?
+    };
 
-    if concurrency == 1 {
+    // DDL-only всегда выполняем потоково: это избегает дорогой распаковки data/* на диск.
+    if ddl_only || concurrency == 1 {
         stream::import_objects_streaming(
             bundle_path,
             access.password.as_deref(),
             access.is_encrypted,
             &client,
             mode,
+            ddl_only,
             target_version_num,
             progress_enabled,
         )
@@ -57,12 +64,20 @@ pub async fn run(
     }
 
     let scratch = tempfile::tempdir().context("failed to create temporary directory for import")?;
-    bundle_io::unpack_bundle(
-        bundle_path,
-        scratch.path(),
-        access.password.as_deref(),
-        access.is_encrypted,
-    )?;
+    let unpack_bundle_path = bundle_path.to_path_buf();
+    let unpack_scratch_path = scratch.path().to_path_buf();
+    let unpack_password = access.password;
+    let unpack_is_encrypted = access.is_encrypted;
+    tokio::task::spawn_blocking(move || {
+        bundle_io::unpack_bundle(
+            &unpack_bundle_path,
+            &unpack_scratch_path,
+            unpack_password.as_deref(),
+            unpack_is_encrypted,
+        )
+    })
+    .await
+    .context("parallel import bundle unpack task failed")??;
 
     let manifest = bundle_io::read_manifest_from_dir(scratch.path())?;
     compat::validate_data_compatibility(&manifest, target_version_num)?;
@@ -72,6 +87,7 @@ pub async fn run(
         &manifest,
         mode,
         concurrency,
+        ddl_only,
         progress_enabled,
     )
     .await?;

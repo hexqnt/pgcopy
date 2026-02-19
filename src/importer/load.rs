@@ -49,3 +49,26 @@ where
         }
     }
 }
+
+/// Выполняет только DDL-подготовку целевого объекта без загрузки данных.
+pub(super) async fn prepare_object_ddl_only(
+    client: &tokio_postgres::Client,
+    object: &ManifestObject,
+    mode: ImportMode,
+    ddl_sql: &str,
+) -> Result<()> {
+    match mode {
+        ImportMode::Replace => {
+            replace_tx::run_replace_atomically(client, object, async {
+                target_table::prepare_target_table(client, object, ImportMode::Replace, ddl_sql)
+                    .await?;
+                Ok(())
+            })
+            .await
+        }
+        ImportMode::Append => {
+            target_table::prepare_target_table(client, object, ImportMode::Append, ddl_sql).await?;
+            Ok(())
+        }
+    }
+}

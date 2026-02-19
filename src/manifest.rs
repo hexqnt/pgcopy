@@ -90,3 +90,95 @@ pub fn parse_manifest(manifest_raw: &str, manifest_source: &str) -> Result<Manif
 
     Ok(manifest)
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::parse_manifest;
+
+    fn base_object(target_schema: &str, target_name: &str) -> Value {
+        json!({
+            "kind": "table",
+            "source_schema": "public",
+            "source_name": "orders",
+            "target_schema": target_schema,
+            "target_name": target_name,
+            "source_select": "select * from public.orders",
+            "normalized_select": "SELECT \"id\" FROM \"public\".\"orders\"",
+            "ddl_path": "ddl/0001__public.orders.sql",
+            "data_path": "data/0001__public.orders.copybin",
+            "effective_columns": ["id"],
+            "effective_column_types": ["bigint"],
+            "column_projection": "*",
+            "row_estimate": 10
+        })
+    }
+
+    fn manifest_raw_with_objects(objects: Vec<Value>) -> String {
+        json!({
+            "format_version": 1,
+            "created_at": "2026-02-19T10:00:00Z",
+            "source_fingerprint": "database=app user=app",
+            "source_pg_version_num": 150002,
+            "data_format": "binary",
+            "consistent_snapshot": true,
+            "objects": objects
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn parses_valid_manifest() {
+        let raw = manifest_raw_with_objects(vec![base_object("archive", "orders")]);
+        let manifest = parse_manifest(&raw, "inline manifest").expect("manifest should parse");
+        assert_eq!(manifest.format_version, 1);
+        assert_eq!(manifest.objects.len(), 1);
+        assert_eq!(manifest.objects[0].target_schema, "archive");
+        assert_eq!(manifest.objects[0].target_name, "orders");
+    }
+
+    #[test]
+    fn rejects_duplicate_target_objects() {
+        let raw = manifest_raw_with_objects(vec![
+            base_object("archive", "orders"),
+            base_object("archive", "orders"),
+        ]);
+        let error = parse_manifest(&raw, "inline manifest")
+            .expect_err("duplicate target objects must fail validation");
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate target object archive.orders")
+        );
+    }
+
+    #[test]
+    fn rejects_mismatched_column_types_length() {
+        let mut object = base_object("archive", "orders");
+        object["effective_columns"] = json!(["id", "status"]);
+        object["effective_column_types"] = json!(["bigint"]);
+        let raw = manifest_raw_with_objects(vec![object]);
+
+        let error = parse_manifest(&raw, "inline manifest")
+            .expect_err("mismatched effective_column_types must fail validation");
+        assert!(
+            error
+                .to_string()
+                .contains("mismatched effective_column_types")
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_format_version() {
+        let mut root: Value = serde_json::from_str(&manifest_raw_with_objects(vec![base_object(
+            "archive", "orders",
+        )]))
+        .expect("test json must parse");
+        root["format_version"] = json!(2);
+
+        let error = parse_manifest(&root.to_string(), "inline manifest")
+            .expect_err("unsupported format version must fail validation");
+        assert!(error.to_string().contains("unsupported format_version 2"));
+    }
+}

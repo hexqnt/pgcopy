@@ -28,6 +28,7 @@ pub async fn import_objects_parallel(
     manifest: &Manifest,
     mode: ImportMode,
     concurrency: usize,
+    ddl_only: bool,
     progress_enabled: bool,
 ) -> Result<u64> {
     let data_format = manifest.data_format;
@@ -46,7 +47,15 @@ pub async fn import_objects_parallel(
         let scratch_dir = scratch_dir.to_path_buf();
         // Каждый worker использует отдельное соединение с target БД.
         workers.spawn(async move {
-            import_worker(&target_config, &scratch_dir, tasks, mode, data_format).await
+            import_worker(
+                &target_config,
+                &scratch_dir,
+                tasks,
+                mode,
+                data_format,
+                ddl_only,
+            )
+            .await
         });
     }
 
@@ -84,6 +93,7 @@ async fn import_worker(
     tasks: Vec<(usize, ManifestObject)>,
     mode: ImportMode,
     data_format: DataFormat,
+    ddl_only: bool,
 ) -> ImportWorkerOutcome {
     let Some((first_index, first_object)) = tasks.first().cloned() else {
         return ImportWorkerOutcome {
@@ -112,7 +122,7 @@ async fn import_worker(
     };
 
     for (index, object) in tasks {
-        let imported = import_object(&client, scratch_dir, &object, mode, data_format)
+        let imported = import_object(&client, scratch_dir, &object, mode, data_format, ddl_only)
             .await
             .with_context(|| {
                 format!(
@@ -149,8 +159,14 @@ async fn import_object(
     object: &ManifestObject,
     mode: ImportMode,
     data_format: DataFormat,
+    ddl_only: bool,
 ) -> Result<u64> {
     let ddl_sql = read_ddl_from_bundle(scratch_dir, &object.ddl_path).await?;
+    if ddl_only {
+        load::prepare_object_ddl_only(client, object, mode, &ddl_sql).await?;
+        return Ok(0);
+    }
+
     let data_path = scratch_dir.join(&object.data_path);
     let inserted_rows = load::load_object(client, object, mode, &ddl_sql, || async {
         copy_stream::copy_data_in_file(

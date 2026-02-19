@@ -85,8 +85,20 @@ pub async fn run(
     };
 
     progress.set_bundle_running(out_path);
-    let write_result =
-        bundle_io::write_bundle(scratch.path(), out_path, &manifest, password.as_deref());
+    let bundle_scratch_path = scratch.path().to_path_buf();
+    let bundle_out_path = out_path.to_path_buf();
+    let bundle_password = password;
+    let bundle_manifest = manifest;
+    let write_result = tokio::task::spawn_blocking(move || {
+        bundle_io::write_bundle(
+            &bundle_scratch_path,
+            &bundle_out_path,
+            &bundle_manifest,
+            bundle_password.as_deref(),
+        )
+    })
+    .await
+    .context("bundle writer task failed")?;
     match write_result {
         Ok(()) => {
             progress.finish_bundle_done(out_path);
