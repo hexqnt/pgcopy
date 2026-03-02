@@ -6,7 +6,7 @@ use crate::types::DataFormat;
 /// Метаданные bundle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
-    /// Версия схемы manifest (сейчас поддерживается только `1`).
+    /// Версия схемы manifest (поддерживается только `2`).
     pub format_version: u32,
     /// RFC3339 timestamp создания bundle.
     pub created_at: String,
@@ -52,9 +52,9 @@ pub fn parse_manifest(manifest_raw: &str, manifest_source: &str) -> Result<Manif
         bail!("manifest validation error: objects must not be empty");
     }
 
-    if manifest.format_version != 1 {
+    if manifest.format_version != 2 {
         bail!(
-            "manifest validation error: unsupported format_version {}, expected 1",
+            "manifest validation error: unsupported format_version {}, expected 2",
             manifest.format_version
         );
     }
@@ -117,7 +117,7 @@ mod tests {
 
     fn manifest_raw_with_objects(objects: Vec<Value>) -> String {
         json!({
-            "format_version": 1,
+            "format_version": 2,
             "created_at": "2026-02-19T10:00:00Z",
             "source_fingerprint": "database=app user=app",
             "source_pg_version_num": 150002,
@@ -132,7 +132,7 @@ mod tests {
     fn parses_valid_manifest() {
         let raw = manifest_raw_with_objects(vec![base_object("archive", "orders")]);
         let manifest = parse_manifest(&raw, "inline manifest").expect("manifest should parse");
-        assert_eq!(manifest.format_version, 1);
+        assert_eq!(manifest.format_version, 2);
         assert_eq!(manifest.objects.len(), 1);
         assert_eq!(manifest.objects[0].target_schema, "archive");
         assert_eq!(manifest.objects[0].target_name, "orders");
@@ -175,10 +175,10 @@ mod tests {
             "archive", "orders",
         )]))
         .expect("test json must parse");
-        root["format_version"] = json!(2);
+        root["format_version"] = json!(1);
 
         let error = parse_manifest(&root.to_string(), "inline manifest")
             .expect_err("unsupported format version must fail validation");
-        assert!(error.to_string().contains("unsupported format_version 2"));
+        assert!(error.to_string().contains("unsupported format_version 1"));
     }
 }

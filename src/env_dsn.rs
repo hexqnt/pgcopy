@@ -56,16 +56,14 @@ fn build_default(overrides: &ConnectionOverrides) -> Result<Config> {
     }
 
     let mut config = Config::new();
-    config.host(
-        &host.expect("host must be resolved when required connection parameter check passes"),
-    );
+    config
+        .host(host.expect("host must be resolved when required connection parameter check passes"));
     config.port(port);
     config.dbname(
-        &dbname.expect("dbname must be resolved when required connection parameter check passes"),
+        dbname.expect("dbname must be resolved when required connection parameter check passes"),
     );
-    config.user(
-        &user.expect("user must be resolved when required connection parameter check passes"),
-    );
+    config
+        .user(user.expect("user must be resolved when required connection parameter check passes"));
     if let Some(password) = password.as_deref() {
         config.password(password);
     }

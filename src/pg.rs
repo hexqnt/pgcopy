@@ -108,36 +108,6 @@ pub async fn relation_kind_opt(
         .transpose()
 }
 
-/// Читает список колонок в физическом порядке (`attnum`).
-pub async fn relation_columns(client: &Client, schema: &str, name: &str) -> Result<Vec<String>> {
-    let rows = client
-        .query(
-            "
-            SELECT a.attname
-            FROM pg_attribute a
-            JOIN pg_class c ON c.oid = a.attrelid
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = $1
-              AND c.relname = $2
-              AND a.attnum > 0
-              AND NOT a.attisdropped
-            ORDER BY a.attnum
-            ",
-            &[&schema, &name],
-        )
-        .await
-        .with_context(|| format!("failed to fetch column list for {schema}.{name}"))?;
-
-    if rows.is_empty() {
-        bail!("source relation {schema}.{name} has no columns");
-    }
-
-    Ok(rows
-        .into_iter()
-        .map(|row| row.get::<_, String>(0))
-        .collect())
-}
-
 /// Читает список `(имя, type_sql)` в физическом порядке.
 pub async fn relation_columns_with_types(
     client: &Client,

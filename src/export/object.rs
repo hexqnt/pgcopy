@@ -23,15 +23,17 @@ pub async fn export_object(
     let relation_kind = pg::relation_kind(client, &source_schema, &source_name).await?;
     let (target_schema, target_name) = resolve_target_names(object, relation_kind);
 
-    let source_columns = pg::relation_columns(client, &source_schema, &source_name).await?;
+    let all_defs = pg::relation_column_defs(client, &source_schema, &source_name).await?;
+    let source_columns = all_defs
+        .iter()
+        .map(|definition| definition.name.clone())
+        .collect::<Vec<_>>();
     let effective_columns = object
         .select
         .effective_columns(&source_columns)
         .with_context(|| {
             format!("failed to build effective columns for {source_schema}.{source_name}")
         })?;
-
-    let all_defs = pg::relation_column_defs(client, &source_schema, &source_name).await?;
     let selected_defs =
         pg::pick_column_defs(&all_defs, &effective_columns, &source_schema, &source_name)?;
     let effective_column_types = selected_defs

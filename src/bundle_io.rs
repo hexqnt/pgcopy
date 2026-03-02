@@ -213,8 +213,12 @@ fn write_bundle_archive<W: Write>(
             .append_path_with_name(manifest_path, "manifest.json")
             .context("failed to append manifest.json to bundle")?;
 
+        // Формат v2: сначала все DDL, затем все data.
+        // Это позволяет `--ddl-only` завершаться без чтения payload data/*.
         for object in &manifest.objects {
             append_entry(&mut archive, scratch_dir, &object.ddl_path)?;
+        }
+        for object in &manifest.objects {
             append_entry(&mut archive, scratch_dir, &object.data_path)?;
         }
 
@@ -236,4 +240,88 @@ fn append_entry<W: Write>(
         .append_path_with_name(&abs_path, rel_path)
         .with_context(|| format!("failed to append {rel_path} to bundle"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::{open_bundle_reader, write_bundle};
+    use crate::manifest::{Manifest, ManifestObject};
+    use crate::types::DataFormat;
+
+    fn test_object(source_name: &str, index: usize) -> ManifestObject {
+        let stem = format!("{:04}__public.{source_name}", index + 1);
+        ManifestObject {
+            kind: "table".to_owned(),
+            source_schema: "public".to_owned(),
+            source_name: source_name.to_owned(),
+            target_schema: "archive".to_owned(),
+            target_name: source_name.to_owned(),
+            source_select: format!("select * from public.{source_name}"),
+            normalized_select: format!("SELECT \"id\" FROM \"public\".\"{source_name}\""),
+            ddl_path: format!("ddl/{stem}.sql"),
+            data_path: format!("data/{stem}.copybin"),
+            effective_columns: vec!["id".to_owned()],
+            effective_column_types: vec!["bigint".to_owned()],
+            column_projection: "*".to_owned(),
+            row_estimate: Some(1),
+        }
+    }
+
+    #[test]
+    fn writes_v2_layout_with_grouped_ddl_then_data() {
+        let scratch = tempfile::tempdir().expect("tempdir must be created");
+        fs::create_dir_all(scratch.path().join("ddl")).expect("ddl dir must be created");
+        fs::create_dir_all(scratch.path().join("data")).expect("data dir must be created");
+
+        let object_a = test_object("orders", 0);
+        let object_b = test_object("payments", 1);
+        for object in [&object_a, &object_b] {
+            fs::write(scratch.path().join(&object.ddl_path), "-- ddl")
+                .expect("ddl file must be written");
+            fs::write(scratch.path().join(&object.data_path), [0_u8, 1_u8, 2_u8])
+                .expect("data file must be written");
+        }
+
+        let manifest = Manifest {
+            format_version: 2,
+            created_at: "2026-03-02T12:00:00Z".to_owned(),
+            source_fingerprint: Some("database=app user=app".to_owned()),
+            source_pg_version_num: 150002,
+            data_format: DataFormat::Binary,
+            consistent_snapshot: true,
+            objects: vec![object_a.clone(), object_b.clone()],
+        };
+
+        let bundle_path = scratch.path().join("bundle.tar.zst");
+        write_bundle(scratch.path(), &bundle_path, &manifest, None)
+            .expect("bundle must be written");
+
+        let reader =
+            open_bundle_reader(&bundle_path, None, false).expect("bundle must be readable");
+        let mut archive = tar::Archive::new(reader);
+        let entries = archive.entries().expect("entries must be listed");
+        let names = entries
+            .map(|entry| {
+                entry
+                    .expect("entry must be readable")
+                    .path()
+                    .expect("entry path must be available")
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "manifest.json".to_owned(),
+                object_a.ddl_path,
+                object_b.ddl_path,
+                object_a.data_path,
+                object_b.data_path,
+            ]
+        );
+    }
 }

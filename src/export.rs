@@ -75,7 +75,7 @@ pub async fn run(
     };
 
     let manifest = Manifest {
-        format_version: 1,
+        format_version: 2,
         created_at: Utc::now().to_rfc3339(),
         source_fingerprint,
         source_pg_version_num,

@@ -93,7 +93,7 @@ mod tests {
 
     fn manifest_for_compat(data_format: DataFormat, source_pg_version_num: i32) -> Manifest {
         Manifest {
-            format_version: 1,
+            format_version: 2,
             created_at: "2026-02-19T10:00:00Z".to_owned(),
             source_fingerprint: Some("database=app user=app".to_owned()),
             source_pg_version_num,

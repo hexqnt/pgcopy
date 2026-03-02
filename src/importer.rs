@@ -51,13 +51,15 @@ pub async fn run(
     if ddl_only || concurrency == 1 {
         stream::import_objects_streaming(
             bundle_path,
-            access.password.as_deref(),
-            access.is_encrypted,
             &client,
-            mode,
-            ddl_only,
-            target_version_num,
-            progress_enabled,
+            stream::ImportStreamOptions {
+                password: access.password.as_deref(),
+                is_encrypted: access.is_encrypted,
+                mode,
+                ddl_only,
+                target_version_num,
+                progress_enabled,
+            },
         )
         .await?;
         return Ok(());

@@ -1,30 +1,36 @@
-use std::io::{self, Read};
+use std::io::Read;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 
 use super::{ImportMode, compat, copy_stream, load, progress::ImportProgress};
+use crate::manifest::Manifest;
+
+pub(super) struct ImportStreamOptions<'a> {
+    pub(super) password: Option<&'a str>,
+    pub(super) is_encrypted: bool,
+    pub(super) mode: ImportMode,
+    pub(super) ddl_only: bool,
+    pub(super) target_version_num: i32,
+    pub(super) progress_enabled: bool,
+}
 
 /// Импортирует bundle в потоковом режиме без предварительной распаковки.
 pub async fn import_objects_streaming(
     bundle_path: &Path,
-    password: Option<&str>,
-    is_encrypted: bool,
     client: &tokio_postgres::Client,
-    mode: ImportMode,
-    ddl_only: bool,
-    target_version_num: i32,
-    progress_enabled: bool,
+    options: ImportStreamOptions<'_>,
 ) -> Result<u64> {
-    let reader = crate::bundle_io::open_bundle_reader(bundle_path, password, is_encrypted)?;
+    let reader =
+        crate::bundle_io::open_bundle_reader(bundle_path, options.password, options.is_encrypted)?;
     let mut archive = tar::Archive::new(reader);
     import_from_archive_stream(
         &mut archive,
         client,
-        mode,
-        ddl_only,
-        target_version_num,
-        progress_enabled,
+        options.mode,
+        options.ddl_only,
+        options.target_version_num,
+        options.progress_enabled,
     )
     .await
 }
@@ -46,30 +52,45 @@ async fn import_from_archive_stream<R: Read>(
         compat::validate_data_compatibility(&manifest, target_version_num)?;
     }
     let progress = ImportProgress::new(&manifest, progress_enabled);
-    let mut total_rows = 0_u64;
+    let total_rows =
+        import_objects_layout_v2(&mut entries, client, mode, ddl_only, &manifest, &progress)
+            .await?;
+    progress.finish_done(total_rows);
+    Ok(total_rows)
+}
 
+async fn import_objects_layout_v2<R: Read>(
+    entries: &mut tar::Entries<'_, R>,
+    client: &tokio_postgres::Client,
+    mode: ImportMode,
+    ddl_only: bool,
+    manifest: &Manifest,
+    progress: &ImportProgress,
+) -> Result<u64> {
+    // Формат v2: после manifest идут все DDL, затем все data.
+    let mut ddl_entries = Vec::with_capacity(manifest.objects.len());
+    for object in &manifest.objects {
+        ddl_entries.push(read_ddl_entry(entries, &object.ddl_path)?);
+    }
+
+    let mut total_rows = 0_u64;
     for (index, object) in manifest.objects.iter().enumerate() {
         progress.set_object_running(index, object);
         let import_result: Result<u64> = async {
-            let ddl_sql = {
-                // Порядок archive entries строго фиксирован manifest-ом.
-                let mut ddl_entry =
-                    crate::bundle_io::next_required_entry(&mut entries, &object.ddl_path)?;
-                let mut ddl_sql = String::new();
-                ddl_entry.read_to_string(&mut ddl_sql).with_context(|| {
-                    format!("failed to read DDL entry '{}' from bundle", object.ddl_path)
-                })?;
-                ddl_sql
-            };
+            let ddl_sql = ddl_entries.get(index).with_context(|| {
+                format!(
+                    "internal error: missing cached DDL for manifest object index {}",
+                    index + 1
+                )
+            })?;
 
             let imported_rows = if ddl_only {
-                load::prepare_object_ddl_only(client, object, mode, &ddl_sql).await?;
-                skip_data_entry(&mut entries, &object.data_path).await?;
+                load::prepare_object_ddl_only(client, object, mode, ddl_sql).await?;
                 0
             } else {
-                load::load_object(client, object, mode, &ddl_sql, || async {
+                load::load_object(client, object, mode, ddl_sql, || async {
                     let mut data_entry =
-                        crate::bundle_io::next_required_entry(&mut entries, &object.data_path)?;
+                        crate::bundle_io::next_required_entry(entries, &object.data_path)?;
                     copy_stream::copy_data_in_reader(
                         client,
                         &mut data_entry,
@@ -114,16 +135,14 @@ async fn import_from_archive_stream<R: Read>(
         }
     }
 
-    progress.finish_done(total_rows);
     Ok(total_rows)
 }
 
-async fn skip_data_entry<R: Read>(
-    entries: &mut tar::Entries<'_, R>,
-    data_path: &str,
-) -> Result<()> {
-    let mut data_entry = crate::bundle_io::next_required_entry(entries, data_path)?;
-    tokio::task::block_in_place(|| io::copy(&mut data_entry, &mut io::sink()))
-        .with_context(|| format!("failed to skip data entry '{}' from bundle", data_path))?;
-    Ok(())
+fn read_ddl_entry<R: Read>(entries: &mut tar::Entries<'_, R>, ddl_path: &str) -> Result<String> {
+    let mut ddl_entry = crate::bundle_io::next_required_entry(entries, ddl_path)?;
+    let mut ddl_sql = String::new();
+    ddl_entry
+        .read_to_string(&mut ddl_sql)
+        .with_context(|| format!("failed to read DDL entry '{}' from bundle", ddl_path))?;
+    Ok(ddl_sql)
 }

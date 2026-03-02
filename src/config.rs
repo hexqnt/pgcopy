@@ -18,12 +18,9 @@ pub struct Config {
 
 /// Общие настройки экспорта.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct GeneralConfig {
     /// Формат COPY-потока в bundle.
     pub data_format: DataFormat,
-    /// Алгоритм сжатия bundle (сейчас поддерживается только `zstd`).
-    pub compression: String,
     /// Включает REPEATABLE READ snapshot для согласованного чтения.
     pub consistent_snapshot: bool,
     /// Количество параллельных workers.
@@ -164,7 +161,6 @@ pub fn load(path: &Path) -> Result<Config> {
     Ok(Config {
         general: GeneralConfig {
             data_format: parsed.general.data_format,
-            compression: parsed.general.compression,
             consistent_snapshot: parsed.general.consistent_snapshot,
             concurrency,
             concurrency_from_toml,
