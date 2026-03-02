@@ -5,9 +5,10 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use crate::bundle_io;
-use crate::config::{self, Config, GeneralConfig, ObjectConfig};
+use crate::config::{self, Config, GeneralConfig};
 use crate::crypto;
 use crate::manifest::{Manifest, ManifestObject};
+use crate::parallel_workers;
 use crate::pg;
 
 mod object;
@@ -84,7 +85,7 @@ pub async fn run(
         objects: manifest_objects,
     };
 
-    progress.set_bundle_running(out_path);
+    progress.set_bundle_running();
     let bundle_scratch_path = scratch.path().to_path_buf();
     let bundle_out_path = out_path.to_path_buf();
     let bundle_password = password;
@@ -160,7 +161,7 @@ async fn export_objects(
     let mut manifest_objects = Vec::with_capacity(config.objects.len());
 
     for (index, object) in config.objects.iter().enumerate() {
-        progress.set_object_running(index, object);
+        progress.set_object_running(object);
         let manifest_object = export_object(
             client,
             scratch.path(),
@@ -178,11 +179,11 @@ async fn export_objects(
 
         match manifest_object {
             Ok(manifest_object) => {
-                progress.set_object_done(index, &manifest_object);
+                progress.set_object_done(&manifest_object);
                 manifest_objects.push(manifest_object);
             }
             Err(error) => {
-                progress.set_object_error(index, object, error.as_ref());
+                progress.set_object_error(object, error.as_ref());
                 return Err(error);
             }
         }
@@ -202,47 +203,45 @@ async fn export_objects_parallel(
 ) -> Result<Vec<ManifestObject>> {
     let data_format = config.general.data_format;
     let mut ordered_objects = vec![None; config.objects.len()];
-    let workers_count = concurrency.min(config.objects.len());
-    let mut buckets = vec![Vec::<(usize, ObjectConfig)>::new(); workers_count];
-
-    for (index, object) in config.objects.iter().cloned().enumerate() {
-        progress.set_object_running(index, &object);
-        buckets[index % workers_count].push((index, object));
+    for object in &config.objects {
+        progress.set_object_running(object);
     }
-
-    let mut workers = tokio::task::JoinSet::new();
-    for tasks in buckets.into_iter().filter(|tasks| !tasks.is_empty()) {
-        let source_config = source_config.clone();
-        let scratch_dir = scratch.path().to_path_buf();
-        let snapshot_id = snapshot_id.clone();
-        // Каждый worker получает свой connection и обрабатывает свой bucket.
-        workers.spawn(async move {
-            export_worker(
-                &source_config,
-                &scratch_dir,
-                tasks,
-                data_format,
-                snapshot_id.as_deref(),
-            )
-            .await
+    let mut workers =
+        parallel_workers::spawn_bucket_workers(&config.objects, concurrency, |tasks| {
+            let source_config = source_config.clone();
+            let scratch_dir = scratch.path().to_path_buf();
+            let snapshot_id = snapshot_id.clone();
+            // Каждый worker получает свой connection и обрабатывает свой bucket.
+            async move {
+                export_worker(
+                    &source_config,
+                    &scratch_dir,
+                    tasks,
+                    data_format,
+                    snapshot_id.as_deref(),
+                )
+                .await
+            }
         });
-    }
 
-    while let Some(join_result) = workers.join_next().await {
-        let outcome = join_result.context("parallel export worker task failed")?;
+    parallel_workers::process_joinset_outcomes(
+        &mut workers,
+        "parallel export worker task failed",
+        |outcome| {
+            for (index, manifest_object) in outcome.completed {
+                progress.set_object_done(&manifest_object);
+                ordered_objects[index] = Some(manifest_object);
+            }
 
-        for (index, manifest_object) in outcome.completed {
-            progress.set_object_done(index, &manifest_object);
-            ordered_objects[index] = Some(manifest_object);
-        }
+            if let Some(failure) = outcome.failure {
+                progress.set_object_error(&failure.object, failure.error.as_ref());
+                return Err(failure.error);
+            }
 
-        if let Some(failure) = outcome.failure {
-            workers.abort_all();
-            while workers.join_next().await.is_some() {}
-            progress.set_object_error(failure.index, &failure.object, failure.error.as_ref());
-            return Err(failure.error);
-        }
-    }
+            Ok(())
+        },
+    )
+    .await?;
 
     let mut manifest_objects = Vec::with_capacity(config.objects.len());
     for (index, manifest_object) in ordered_objects.into_iter().enumerate() {

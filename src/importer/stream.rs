@@ -4,11 +4,11 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use super::{ImportMode, compat, copy_stream, load, progress::ImportProgress};
+use crate::bundle_io::BundleAccess;
 use crate::manifest::Manifest;
 
-pub(super) struct ImportStreamOptions<'a> {
-    pub(super) password: Option<&'a str>,
-    pub(super) is_encrypted: bool,
+pub(super) struct ImportStreamOptions {
+    pub(super) access: BundleAccess,
     pub(super) mode: ImportMode,
     pub(super) ddl_only: bool,
     pub(super) target_version_num: i32,
@@ -19,10 +19,9 @@ pub(super) struct ImportStreamOptions<'a> {
 pub async fn import_objects_streaming(
     bundle_path: &Path,
     client: &tokio_postgres::Client,
-    options: ImportStreamOptions<'_>,
+    options: ImportStreamOptions,
 ) -> Result<u64> {
-    let reader =
-        crate::bundle_io::open_bundle_reader(bundle_path, options.password, options.is_encrypted)?;
+    let reader = crate::bundle_io::open_bundle_reader(bundle_path, &options.access)?;
     let mut archive = tar::Archive::new(reader);
     import_from_archive_stream(
         &mut archive,
@@ -75,7 +74,7 @@ async fn import_objects_layout_v2<R: Read>(
 
     let mut total_rows = 0_u64;
     for (index, object) in manifest.objects.iter().enumerate() {
-        progress.set_object_running(index, object);
+        progress.set_object_running(object);
         let import_result: Result<u64> = async {
             let ddl_sql = ddl_entries.get(index).with_context(|| {
                 format!(
@@ -125,10 +124,10 @@ async fn import_objects_layout_v2<R: Read>(
         match import_result {
             Ok(inserted_rows) => {
                 total_rows += inserted_rows;
-                progress.set_object_done(index, object, inserted_rows);
+                progress.set_object_done(object, inserted_rows);
             }
             Err(error) => {
-                progress.set_object_error(index, object, error.as_ref());
+                progress.set_object_error(object, error.as_ref());
                 progress.finish_with_error(error.as_ref());
                 return Err(error);
             }

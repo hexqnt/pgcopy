@@ -43,44 +43,7 @@ pub(super) async fn prepare_target_table(
     match mode {
         ImportMode::Replace => {
             if let Some(kind) = target_kind {
-                match kind {
-                    RelationKind::Table => {
-                        let drop_sql = format!(
-                            "DROP TABLE IF EXISTS {}",
-                            quoted_fq_name(&object.target_schema, &object.target_name)
-                        );
-                        client.batch_execute(&drop_sql).await.with_context(|| {
-                            format!(
-                                "failed to drop target table {}.{}",
-                                object.target_schema, object.target_name
-                            )
-                        })?;
-                    }
-                    RelationKind::View => {
-                        let drop_sql = format!(
-                            "DROP VIEW IF EXISTS {}",
-                            quoted_fq_name(&object.target_schema, &object.target_name)
-                        );
-                        client.batch_execute(&drop_sql).await.with_context(|| {
-                            format!(
-                                "failed to drop target view {}.{}",
-                                object.target_schema, object.target_name
-                            )
-                        })?;
-                    }
-                    RelationKind::MaterializedView => {
-                        let drop_sql = format!(
-                            "DROP MATERIALIZED VIEW IF EXISTS {}",
-                            quoted_fq_name(&object.target_schema, &object.target_name)
-                        );
-                        client.batch_execute(&drop_sql).await.with_context(|| {
-                            format!(
-                                "failed to drop target materialized view {}.{}",
-                                object.target_schema, object.target_name
-                            )
-                        })?;
-                    }
-                }
+                drop_existing_target_relation(client, object, kind).await?;
             }
 
             execute_ddl_sql(client, ddl_sql, &object.target_schema, &object.target_name).await?;
@@ -116,5 +79,30 @@ async fn execute_ddl_sql(
     client.batch_execute(ddl_sql).await.with_context(|| {
         format!("failed to execute DDL for target object {target_schema}.{target_name}")
     })?;
+    Ok(())
+}
+
+async fn drop_existing_target_relation(
+    client: &tokio_postgres::Client,
+    object: &ManifestObject,
+    kind: RelationKind,
+) -> Result<()> {
+    let drop_keyword = match kind {
+        RelationKind::Table => "TABLE",
+        RelationKind::View => "VIEW",
+        RelationKind::MaterializedView => "MATERIALIZED VIEW",
+    };
+    let relation_fq_name = quoted_fq_name(&object.target_schema, &object.target_name);
+    let drop_sql = format!("DROP {drop_keyword} IF EXISTS {relation_fq_name}");
+
+    client.batch_execute(&drop_sql).await.with_context(|| {
+        format!(
+            "failed to drop target {} {}.{}",
+            kind.as_str().replace('_', " "),
+            object.target_schema,
+            object.target_name
+        )
+    })?;
+
     Ok(())
 }

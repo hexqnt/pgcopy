@@ -18,36 +18,19 @@ where
     C: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<u64>>,
 {
-    match mode {
-        ImportMode::Replace => {
-            replace_tx::run_replace_atomically(client, object, async {
-                target_table::prepare_target_table(client, object, ImportMode::Replace, ddl_sql)
-                    .await?;
-                let inserted_rows = copy_data().await?;
-                sequences::sync_table_sequences(
-                    client,
-                    &object.target_schema,
-                    &object.target_name,
-                    &object.effective_columns,
-                )
-                .await?;
-                Ok(inserted_rows)
-            })
-            .await
-        }
-        ImportMode::Append => {
-            target_table::prepare_target_table(client, object, ImportMode::Append, ddl_sql).await?;
-            let inserted_rows = copy_data().await?;
-            sequences::sync_table_sequences(
-                client,
-                &object.target_schema,
-                &object.target_name,
-                &object.effective_columns,
-            )
-            .await?;
-            Ok(inserted_rows)
-        }
-    }
+    run_with_mode(client, object, mode, move || async move {
+        target_table::prepare_target_table(client, object, mode, ddl_sql).await?;
+        let inserted_rows = copy_data().await?;
+        sequences::sync_table_sequences(
+            client,
+            &object.target_schema,
+            &object.target_name,
+            &object.effective_columns,
+        )
+        .await?;
+        Ok(inserted_rows)
+    })
+    .await
 }
 
 /// Выполняет только DDL-подготовку целевого объекта без загрузки данных.
@@ -57,18 +40,26 @@ pub(super) async fn prepare_object_ddl_only(
     mode: ImportMode,
     ddl_sql: &str,
 ) -> Result<()> {
+    run_with_mode(client, object, mode, move || async move {
+        target_table::prepare_target_table(client, object, mode, ddl_sql).await
+    })
+    .await
+}
+
+async fn run_with_mode<T, F, Fut>(
+    client: &tokio_postgres::Client,
+    object: &ManifestObject,
+    mode: ImportMode,
+    operation: F,
+) -> Result<T>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
     match mode {
         ImportMode::Replace => {
-            replace_tx::run_replace_atomically(client, object, async {
-                target_table::prepare_target_table(client, object, ImportMode::Replace, ddl_sql)
-                    .await?;
-                Ok(())
-            })
-            .await
+            replace_tx::run_replace_atomically(client, object, operation()).await
         }
-        ImportMode::Append => {
-            target_table::prepare_target_table(client, object, ImportMode::Append, ddl_sql).await?;
-            Ok(())
-        }
+        ImportMode::Append => operation().await,
     }
 }

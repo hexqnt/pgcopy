@@ -11,7 +11,6 @@ use super::object::export_object;
 
 /// Ошибка worker-а экспорта с привязкой к объекту.
 pub struct ExportWorkerFailure {
-    pub index: usize,
     pub object: ObjectConfig,
     pub error: anyhow::Error,
 }
@@ -31,7 +30,7 @@ pub async fn export_worker(
     data_format: DataFormat,
     snapshot_id: Option<&str>,
 ) -> ExportWorkerOutcome {
-    let Some((first_index, first_object)) = tasks.first().cloned() else {
+    let Some((_, first_object)) = tasks.first().cloned() else {
         return ExportWorkerOutcome {
             completed: Vec::new(),
             failure: None,
@@ -39,7 +38,7 @@ pub async fn export_worker(
     };
 
     let mut completed = Vec::with_capacity(tasks.len());
-    let mut last_task = Some((first_index, first_object.clone()));
+    let mut last_object = Some(first_object.clone());
 
     let client = match pg::connect(source_config).await {
         Ok(client) => client,
@@ -47,7 +46,6 @@ pub async fn export_worker(
             return ExportWorkerOutcome {
                 completed,
                 failure: Some(ExportWorkerFailure {
-                    index: first_index,
                     object: first_object,
                     error: error.context("failed to connect source database for parallel export"),
                 }),
@@ -65,7 +63,6 @@ pub async fn export_worker(
             return ExportWorkerOutcome {
                 completed,
                 failure: Some(ExportWorkerFailure {
-                    index: first_index,
                     object: first_object,
                     error: anyhow::Error::new(error)
                         .context("failed to begin parallel export snapshot transaction"),
@@ -78,7 +75,6 @@ pub async fn export_worker(
             return ExportWorkerOutcome {
                 completed,
                 failure: Some(ExportWorkerFailure {
-                    index: first_index,
                     object: first_object,
                     error: error.context("failed to set parallel export snapshot"),
                 }),
@@ -87,7 +83,7 @@ pub async fn export_worker(
     }
 
     for (index, object) in tasks {
-        last_task = Some((index, object.clone()));
+        last_object = Some(object.clone());
         match export_object(&client, scratch_dir, index, &object, data_format)
             .await
             .with_context(|| {
@@ -104,11 +100,7 @@ pub async fn export_worker(
 
                 return ExportWorkerOutcome {
                     completed,
-                    failure: Some(ExportWorkerFailure {
-                        index,
-                        object,
-                        error,
-                    }),
+                    failure: Some(ExportWorkerFailure { object, error }),
                 };
             }
         }
@@ -117,11 +109,10 @@ pub async fn export_worker(
     if snapshot_id.is_some()
         && let Err(error) = client.batch_execute("COMMIT").await
     {
-        let (index, object) = last_task.expect("last task must exist for non-empty worker");
+        let object = last_object.expect("last task must exist for non-empty worker");
         return ExportWorkerOutcome {
             completed,
             failure: Some(ExportWorkerFailure {
-                index,
                 object,
                 error: anyhow::Error::new(error)
                     .context("failed to commit parallel export snapshot transaction"),

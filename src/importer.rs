@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{fmt, path::Path};
 
 use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
@@ -23,6 +23,21 @@ pub enum ImportMode {
     Replace,
     #[value(help = "Keep existing target table and append data after compatibility checks")]
     Append,
+}
+
+impl ImportMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Replace => "replace",
+            Self::Append => "append",
+        }
+    }
+}
+
+impl fmt::Display for ImportMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Выполняет импорт bundle в target PostgreSQL.
@@ -53,8 +68,7 @@ pub async fn run(
             bundle_path,
             &client,
             stream::ImportStreamOptions {
-                password: access.password.as_deref(),
-                is_encrypted: access.is_encrypted,
+                access,
                 mode,
                 ddl_only,
                 target_version_num,
@@ -68,15 +82,9 @@ pub async fn run(
     let scratch = tempfile::tempdir().context("failed to create temporary directory for import")?;
     let unpack_bundle_path = bundle_path.to_path_buf();
     let unpack_scratch_path = scratch.path().to_path_buf();
-    let unpack_password = access.password;
-    let unpack_is_encrypted = access.is_encrypted;
+    let unpack_access = access;
     tokio::task::spawn_blocking(move || {
-        bundle_io::unpack_bundle(
-            &unpack_bundle_path,
-            &unpack_scratch_path,
-            unpack_password.as_deref(),
-            unpack_is_encrypted,
-        )
+        bundle_io::unpack_bundle(&unpack_bundle_path, &unpack_scratch_path, &unpack_access)
     })
     .await
     .context("parallel import bundle unpack task failed")??;

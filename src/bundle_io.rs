@@ -32,16 +32,12 @@ pub fn resolve_access(bundle_path: &Path, cli_password: Option<&str>) -> Result<
 }
 
 /// Открывает reader для payload bundle (дешифруя и распаковывая при необходимости).
-pub fn open_bundle_reader(
-    bundle_path: &Path,
-    password: Option<&str>,
-    is_encrypted: bool,
-) -> Result<Box<dyn Read>> {
+pub fn open_bundle_reader(bundle_path: &Path, access: &BundleAccess) -> Result<Box<dyn Read>> {
     let input = std::fs::File::open(bundle_path)
         .with_context(|| format!("failed to open bundle {}", bundle_path.display()))?;
 
-    if is_encrypted {
-        let password = password.with_context(|| {
+    if access.is_encrypted {
+        let password = access.password.as_deref().with_context(|| {
             format!(
                 "bundle {} is encrypted and requires --password or PASSWORD",
                 bundle_path.display()
@@ -80,12 +76,8 @@ pub fn open_bundle_reader(
 }
 
 /// Читает `manifest.json` напрямую из bundle без распаковки на диск.
-pub fn read_manifest_from_bundle(
-    bundle_path: &Path,
-    password: Option<&str>,
-    is_encrypted: bool,
-) -> Result<Manifest> {
-    let reader = open_bundle_reader(bundle_path, password, is_encrypted)?;
+pub fn read_manifest_from_bundle(bundle_path: &Path, access: &BundleAccess) -> Result<Manifest> {
+    let reader = open_bundle_reader(bundle_path, access)?;
     let mut archive = tar::Archive::new(reader);
     let mut entries = archive
         .entries()
@@ -132,13 +124,8 @@ pub fn next_required_entry<'a, R: Read>(
 }
 
 /// Распаковывает bundle в каталог `output_dir`.
-pub fn unpack_bundle(
-    bundle_path: &Path,
-    output_dir: &Path,
-    password: Option<&str>,
-    is_encrypted: bool,
-) -> Result<()> {
-    let reader = open_bundle_reader(bundle_path, password, is_encrypted)?;
+pub fn unpack_bundle(bundle_path: &Path, output_dir: &Path, access: &BundleAccess) -> Result<()> {
+    let reader = open_bundle_reader(bundle_path, access)?;
     let mut archive = tar::Archive::new(reader);
     archive
         .unpack(output_dir)
@@ -246,7 +233,7 @@ fn append_entry<W: Write>(
 mod tests {
     use std::fs;
 
-    use super::{open_bundle_reader, write_bundle};
+    use super::{BundleAccess, open_bundle_reader, write_bundle};
     use crate::manifest::{Manifest, ManifestObject};
     use crate::types::DataFormat;
 
@@ -298,8 +285,14 @@ mod tests {
         write_bundle(scratch.path(), &bundle_path, &manifest, None)
             .expect("bundle must be written");
 
-        let reader =
-            open_bundle_reader(&bundle_path, None, false).expect("bundle must be readable");
+        let reader = open_bundle_reader(
+            &bundle_path,
+            &BundleAccess {
+                is_encrypted: false,
+                password: None,
+            },
+        )
+        .expect("bundle must be readable");
         let mut archive = tar::Archive::new(reader);
         let entries = archive.entries().expect("entries must be listed");
         let names = entries

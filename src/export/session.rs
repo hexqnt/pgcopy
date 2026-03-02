@@ -38,24 +38,20 @@ where
 }
 
 async fn begin_consistent_snapshot_transaction(client: &tokio_postgres::Client) -> Result<()> {
-    client
-        .batch_execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        .await
-        .context("failed to begin consistent export snapshot transaction")
+    execute_snapshot_transaction_statement(
+        client,
+        "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+        "begin",
+    )
+    .await
 }
 
 async fn commit_consistent_snapshot_transaction(client: &tokio_postgres::Client) -> Result<()> {
-    client
-        .batch_execute("COMMIT")
-        .await
-        .context("failed to commit consistent export snapshot transaction")
+    execute_snapshot_transaction_statement(client, "COMMIT", "commit").await
 }
 
 async fn rollback_consistent_snapshot_transaction(client: &tokio_postgres::Client) -> Result<()> {
-    client
-        .batch_execute("ROLLBACK")
-        .await
-        .map_err(anyhow::Error::new)
+    execute_snapshot_transaction_statement(client, "ROLLBACK", "rollback").await
 }
 
 async fn export_snapshot_id(client: &tokio_postgres::Client) -> Result<String> {
@@ -64,4 +60,15 @@ async fn export_snapshot_id(client: &tokio_postgres::Client) -> Result<String> {
         .await
         .context("failed to export PostgreSQL snapshot for parallel export")?;
     Ok(snapshot_row.get(0))
+}
+
+async fn execute_snapshot_transaction_statement(
+    client: &tokio_postgres::Client,
+    sql: &str,
+    action: &str,
+) -> Result<()> {
+    client
+        .batch_execute(sql)
+        .await
+        .with_context(|| format!("failed to {action} consistent export snapshot transaction"))
 }

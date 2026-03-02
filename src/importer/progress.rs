@@ -12,14 +12,14 @@ impl ImportProgress {
         Self { ui }
     }
 
-    pub(super) fn set_object_running(&self, _index: usize, object: &ManifestObject) {
+    pub(super) fn set_object_running(&self, object: &ManifestObject) {
         self.ui.set_message(format!(
             "importing {}.{}",
             object.target_schema, object.target_name
         ));
     }
 
-    pub(super) fn set_object_done(&self, _index: usize, object: &ManifestObject, inserted: u64) {
+    pub(super) fn set_object_done(&self, object: &ManifestObject, inserted: u64) {
         self.ui.inc(1);
         self.ui.set_message(format!(
             "done {}.{}",
@@ -33,12 +33,7 @@ impl ImportProgress {
         );
     }
 
-    pub(super) fn set_object_error(
-        &self,
-        _index: usize,
-        object: &ManifestObject,
-        error: &dyn std::error::Error,
-    ) {
+    pub(super) fn set_object_error(&self, object: &ManifestObject, error: &dyn std::error::Error) {
         self.ui.set_message(format!(
             "failed {}.{}",
             object.target_schema, object.target_name

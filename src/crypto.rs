@@ -20,8 +20,7 @@ pub fn resolve_bundle_password(cli_password: Option<&str>) -> Result<Option<Stri
 
     match env::var("PASSWORD") {
         Ok(value) if !value.is_empty() => Ok(Some(value)),
-        Ok(_) => Ok(None),
-        Err(env::VarError::NotPresent) => Ok(None),
+        Ok(_) | Err(env::VarError::NotPresent) => Ok(None),
         Err(env::VarError::NotUnicode(_)) => {
             bail!("environment variable 'PASSWORD' contains non-Unicode data")
         }

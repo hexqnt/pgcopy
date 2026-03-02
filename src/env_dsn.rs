@@ -14,39 +14,28 @@ pub struct ConnectionOverrides {
     pub password: Option<String>,
 }
 
-/// Строит конфигурацию подключения к source базе.
-pub fn source_config(overrides: &ConnectionOverrides) -> Result<Config> {
-    build_default(overrides)
-}
-
-/// Строит конфигурацию подключения к target базе.
-pub fn target_config(overrides: &ConnectionOverrides) -> Result<Config> {
+/// Строит конфигурацию подключения к PostgreSQL.
+pub fn config(overrides: &ConnectionOverrides) -> Result<Config> {
     build_default(overrides)
 }
 
 fn build_default(overrides: &ConnectionOverrides) -> Result<Config> {
-    let mut missing_required = Vec::new();
-
-    let host = resolve_required_string(
-        overrides.host.as_deref(),
-        "PGHOST",
-        "--host",
-        &mut missing_required,
-    )?;
+    let host = resolve_string(overrides.host.as_deref(), "PGHOST")?;
     let port = resolve_port(overrides.port)?;
-    let dbname = resolve_required_string(
-        overrides.dbname.as_deref(),
-        "PGDATABASE",
-        "--dbname",
-        &mut missing_required,
-    )?;
-    let user = resolve_required_string(
-        overrides.user.as_deref(),
-        "PGUSER",
-        "--username",
-        &mut missing_required,
-    )?;
-    let password = resolve_optional_string(overrides.password.as_deref(), "PGPASSWORD")?;
+    let dbname = resolve_string(overrides.dbname.as_deref(), "PGDATABASE")?;
+    let user = resolve_string(overrides.user.as_deref(), "PGUSER")?;
+    let password = resolve_string(overrides.password.as_deref(), "PGPASSWORD")?;
+
+    let mut missing_required = Vec::new();
+    if host.is_none() {
+        missing_required.push("--host/PGHOST");
+    }
+    if dbname.is_none() {
+        missing_required.push("--dbname/PGDATABASE");
+    }
+    if user.is_none() {
+        missing_required.push("--username/PGUSER");
+    }
 
     if !missing_required.is_empty() {
         bail!(
@@ -55,15 +44,15 @@ fn build_default(overrides: &ConnectionOverrides) -> Result<Config> {
         );
     }
 
+    let (Some(host), Some(dbname), Some(user)) = (host, dbname, user) else {
+        unreachable!("required connection parameters must be resolved after missing check");
+    };
+
     let mut config = Config::new();
-    config
-        .host(host.expect("host must be resolved when required connection parameter check passes"));
+    config.host(&host);
     config.port(port);
-    config.dbname(
-        dbname.expect("dbname must be resolved when required connection parameter check passes"),
-    );
-    config
-        .user(user.expect("user must be resolved when required connection parameter check passes"));
+    config.dbname(&dbname);
+    config.user(&user);
     if let Some(password) = password.as_deref() {
         config.password(password);
     }
@@ -71,25 +60,7 @@ fn build_default(overrides: &ConnectionOverrides) -> Result<Config> {
     Ok(config)
 }
 
-fn resolve_required_string(
-    cli_value: Option<&str>,
-    env_name: &str,
-    cli_flag: &str,
-    missing_required: &mut Vec<String>,
-) -> Result<Option<String>> {
-    if let Some(value) = normalize_non_empty(cli_value) {
-        return Ok(Some(value));
-    }
-
-    if let Some(value) = normalize_non_empty(read_env(env_name)?.as_deref()) {
-        return Ok(Some(value));
-    }
-
-    missing_required.push(format!("{cli_flag}/{env_name}"));
-    Ok(None)
-}
-
-fn resolve_optional_string(cli_value: Option<&str>, env_name: &str) -> Result<Option<String>> {
+fn resolve_string(cli_value: Option<&str>, env_name: &str) -> Result<Option<String>> {
     if let Some(value) = normalize_non_empty(cli_value) {
         return Ok(Some(value));
     }

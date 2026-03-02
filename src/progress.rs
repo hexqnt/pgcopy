@@ -3,6 +3,7 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 const OBJECT_LABEL_WIDTH: usize = 42;
 const STATUS_WIDTH: usize = 40;
 
+#[derive(Clone, Copy)]
 pub(crate) enum StatusTone {
     Success,
     Error,

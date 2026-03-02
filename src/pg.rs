@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Write as _};
 
 use anyhow::{Context, Result, bail};
-use tokio_postgres::{Client, Config, NoTls};
+use tokio_postgres::{Client, Config, NoTls, Row};
 
 use crate::sql::{quote_ident, quoted_fq_name};
 use crate::types::DataFormat;
@@ -16,7 +16,7 @@ pub enum RelationKind {
 
 impl RelationKind {
     /// Стабильное строковое представление для manifest и сообщений.
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Table => "table",
             Self::View => "view",
@@ -114,29 +114,18 @@ pub async fn relation_columns_with_types(
     schema: &str,
     name: &str,
 ) -> Result<Vec<(String, String)>> {
-    let rows = client
-        .query(
-            "
-            SELECT
-                a.attname,
-                pg_catalog.format_type(a.atttypid, a.atttypmod) AS type_sql
-            FROM pg_attribute a
-            JOIN pg_class c ON c.oid = a.attrelid
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = $1
-              AND c.relname = $2
-              AND a.attnum > 0
-              AND NOT a.attisdropped
-            ORDER BY a.attnum
-            ",
-            &[&schema, &name],
-        )
-        .await
-        .with_context(|| format!("failed to fetch typed column list for {schema}.{name}"))?;
-
-    if rows.is_empty() {
-        bail!("source relation {schema}.{name} has no columns");
-    }
+    let rows = query_relation_column_rows(
+        client,
+        schema,
+        name,
+        "
+        a.attname,
+        pg_catalog.format_type(a.atttypid, a.atttypmod) AS type_sql
+        ",
+        "",
+        "typed column list",
+    )
+    .await?;
 
     Ok(rows
         .into_iter()
@@ -150,32 +139,20 @@ pub async fn relation_column_defs(
     schema: &str,
     name: &str,
 ) -> Result<Vec<ColumnDef>> {
-    let rows = client
-        .query(
-            "
-            SELECT
-                a.attname,
-                pg_catalog.format_type(a.atttypid, a.atttypmod) AS type_sql,
-                a.attnotnull,
-                pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) AS default_expr
-            FROM pg_attribute a
-            JOIN pg_class c ON c.oid = a.attrelid
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
-            WHERE n.nspname = $1
-              AND c.relname = $2
-              AND a.attnum > 0
-              AND NOT a.attisdropped
-            ORDER BY a.attnum
-            ",
-            &[&schema, &name],
-        )
-        .await
-        .with_context(|| format!("failed to fetch column definitions for {schema}.{name}"))?;
-
-    if rows.is_empty() {
-        bail!("source relation {schema}.{name} has no columns");
-    }
+    let rows = query_relation_column_rows(
+        client,
+        schema,
+        name,
+        "
+        a.attname,
+        pg_catalog.format_type(a.atttypid, a.atttypmod) AS type_sql,
+        a.attnotnull,
+        pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) AS default_expr
+        ",
+        "LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum",
+        "column definitions",
+    )
+    .await?;
 
     Ok(rows
         .into_iter()
@@ -186,6 +163,41 @@ pub async fn relation_column_defs(
             default_expr: row.get(3),
         })
         .collect())
+}
+
+async fn query_relation_column_rows(
+    client: &Client,
+    schema: &str,
+    name: &str,
+    select_clause: &str,
+    extra_joins: &str,
+    context_label: &str,
+) -> Result<Vec<Row>> {
+    let sql = format!(
+        "
+        SELECT
+            {select_clause}
+        FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        {extra_joins}
+        WHERE n.nspname = $1
+          AND c.relname = $2
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+        ORDER BY a.attnum
+        "
+    );
+    let rows = client
+        .query(&sql, &[&schema, &name])
+        .await
+        .with_context(|| format!("failed to fetch {context_label} for {schema}.{name}"))?;
+
+    if rows.is_empty() {
+        bail!("source relation {schema}.{name} has no columns");
+    }
+
+    Ok(rows)
 }
 
 /// Возвращает приблизительную оценку числа строк из `pg_class.reltuples`.
@@ -269,24 +281,30 @@ pub fn create_table_ddl(target_schema: &str, target_name: &str, columns: &[Colum
 
     let mut ddl = String::new();
     for (sequence_name, _) in &sequence_specs {
-        ddl.push_str(&format!(
-            "CREATE SEQUENCE {};\n",
+        writeln!(
+            ddl,
+            "CREATE SEQUENCE {};",
             quoted_fq_name(target_schema, sequence_name)
-        ));
+        )
+        .expect("writing to string is infallible");
     }
 
-    ddl.push_str(&format!(
+    write!(
+        ddl,
         "CREATE TABLE {} (\n    {body}\n);\n",
         quoted_fq_name(target_schema, target_name)
-    ));
+    )
+    .expect("writing to string is infallible");
 
     for (sequence_name, column_name) in &sequence_specs {
-        ddl.push_str(&format!(
-            "ALTER SEQUENCE {} OWNED BY {}.{};\n",
+        writeln!(
+            ddl,
+            "ALTER SEQUENCE {} OWNED BY {}.{};",
             quoted_fq_name(target_schema, sequence_name),
             quoted_fq_name(target_schema, target_name),
             quote_ident(column_name)
-        ));
+        )
+        .expect("writing to string is infallible");
     }
 
     ddl
@@ -320,7 +338,7 @@ pub fn copy_in_sql(
     )
 }
 
-fn copy_format_options(data_format: DataFormat) -> &'static str {
+const fn copy_format_options(data_format: DataFormat) -> &'static str {
     match data_format {
         DataFormat::Binary => "FORMAT binary",
         // Keep NULL marker explicit and symmetric for export/import.

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{fmt, path::Path};
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -17,6 +17,21 @@ pub enum InfoOutputFormat {
     Json,
 }
 
+impl InfoOutputFormat {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Json => "json",
+        }
+    }
+}
+
+impl fmt::Display for InfoOutputFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Печатает метаинформацию о bundle без подключения к PostgreSQL.
 pub fn run(
     bundle_path: &Path,
@@ -25,18 +40,14 @@ pub fn run(
     show_objects: bool,
 ) -> Result<()> {
     let access = bundle_io::resolve_access(bundle_path, bundle_password)?;
-    let manifest = bundle_io::read_manifest_from_bundle(
-        bundle_path,
-        access.password.as_deref(),
-        access.is_encrypted,
-    )?;
+    let manifest = bundle_io::read_manifest_from_bundle(bundle_path, &access)?;
 
     match output_format {
         InfoOutputFormat::Text => {
-            print_text(bundle_path, access.is_encrypted, &manifest, show_objects)
+            print_text(bundle_path, access.is_encrypted, &manifest, show_objects);
         }
         InfoOutputFormat::Json => {
-            print_json(bundle_path, access.is_encrypted, &manifest, show_objects)?
+            print_json(bundle_path, access.is_encrypted, &manifest, show_objects)?;
         }
     }
 
@@ -53,13 +64,7 @@ fn print_text(bundle_path: &Path, is_encrypted: bool, manifest: &Manifest, show_
         manifest.source_fingerprint.as_deref().unwrap_or("-")
     );
     println!("source_pg_version_num: {}", manifest.source_pg_version_num);
-    println!(
-        "data_format: {}",
-        match manifest.data_format {
-            DataFormat::Binary => "binary",
-            DataFormat::Csv => "csv",
-        }
-    );
+    println!("data_format: {}", manifest.data_format);
     println!("consistent_snapshot: {}", manifest.consistent_snapshot);
     println!("objects_count: {}", manifest.objects.len());
 

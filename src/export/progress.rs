@@ -19,14 +19,14 @@ impl ExportProgress {
         Self { ui }
     }
 
-    pub(super) fn set_object_running(&self, _index: usize, object: &ObjectConfig) {
+    pub(super) fn set_object_running(&self, object: &ObjectConfig) {
         self.ui.set_message(format!(
             "exporting {}.{}",
             object.select.source_schema, object.select.source_name
         ));
     }
 
-    pub(super) fn set_object_done(&self, _index: usize, manifest_object: &ManifestObject) {
+    pub(super) fn set_object_done(&self, manifest_object: &ManifestObject) {
         self.ui.inc(1);
         self.ui.set_message(format!(
             "done {}.{}",
@@ -37,12 +37,7 @@ impl ExportProgress {
             .print_status_line(&label, "done", StatusTone::Success);
     }
 
-    pub(super) fn set_object_error(
-        &self,
-        _index: usize,
-        object: &ObjectConfig,
-        error: &dyn std::error::Error,
-    ) {
+    pub(super) fn set_object_error(&self, object: &ObjectConfig, error: &dyn std::error::Error) {
         self.ui.set_message(format!(
             "failed {}.{}",
             object.select.source_schema, object.select.source_name
@@ -55,7 +50,7 @@ impl ExportProgress {
         );
     }
 
-    pub(super) fn set_bundle_running(&self, _out_path: &Path) {
+    pub(super) fn set_bundle_running(&self) {
         self.ui.set_message("packing bundle".to_owned());
     }
 
