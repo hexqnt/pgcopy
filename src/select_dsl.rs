@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, fmt};
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 
 use crate::sql::quote_ident;
 
@@ -13,6 +14,33 @@ pub enum ColumnProjection {
     All,
     ColumnsList(Vec<String>),
     ExceptList(Vec<String>),
+}
+
+/// Стабильный код типа проекции для manifest.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ProjectionKind {
+    #[serde(rename = "*")]
+    All,
+    #[serde(rename = "columns_list")]
+    ColumnsList,
+    #[serde(rename = "except_list")]
+    ExceptList,
+}
+
+impl ProjectionKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "*",
+            Self::ColumnsList => "columns_list",
+            Self::ExceptList => "except_list",
+        }
+    }
+}
+
+impl fmt::Display for ProjectionKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Ограниченный DSL для безопасного описания источника выборки.
@@ -58,12 +86,12 @@ impl SelectDsl {
         })
     }
 
-    /// Возвращает тип проекции в виде стабильного строкового кода.
-    pub fn projection_kind(&self) -> &'static str {
+    /// Возвращает тип проекции в виде стабильного кода.
+    pub fn projection_kind(&self) -> ProjectionKind {
         match self.projection {
-            ColumnProjection::All => "*",
-            ColumnProjection::ColumnsList(_) => "columns_list",
-            ColumnProjection::ExceptList(_) => "except_list",
+            ColumnProjection::All => ProjectionKind::All,
+            ColumnProjection::ColumnsList(_) => ProjectionKind::ColumnsList,
+            ColumnProjection::ExceptList(_) => ProjectionKind::ExceptList,
         }
     }
 

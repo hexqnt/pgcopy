@@ -11,7 +11,7 @@ use crate::manifest::{self, Manifest};
 #[derive(Debug, Clone)]
 pub struct BundleAccess {
     pub is_encrypted: bool,
-    pub password: Option<String>,
+    pub password: Option<crypto::BundlePassword>,
 }
 
 /// Определяет режим доступа к bundle и проверяет обязательность пароля.
@@ -37,7 +37,7 @@ pub fn open_bundle_reader(bundle_path: &Path, access: &BundleAccess) -> Result<B
         .with_context(|| format!("failed to open bundle {}", bundle_path.display()))?;
 
     if access.is_encrypted {
-        let password = access.password.as_deref().with_context(|| {
+        let password = access.password.as_ref().with_context(|| {
             format!(
                 "bundle {} is encrypted and requires --password or PASSWORD",
                 bundle_path.display()
@@ -53,7 +53,7 @@ pub fn open_bundle_reader(bundle_path: &Path, access: &BundleAccess) -> Result<B
             );
         }
 
-        let identity = age::scrypt::Identity::new(SecretString::from(password.to_owned()));
+        let identity = age::scrypt::Identity::new(SecretString::from(password.as_str().to_owned()));
         let decrypted = decryptor
             .decrypt(std::iter::once(&identity as &dyn age::Identity))
             .context("failed to decrypt bundle (wrong password?)")?;
@@ -148,7 +148,7 @@ pub fn write_bundle(
     scratch_dir: &Path,
     out_path: &Path,
     manifest: &Manifest,
-    password: Option<&str>,
+    password: Option<&crypto::BundlePassword>,
 ) -> Result<()> {
     if let Some(parent) = out_path.parent()
         && !parent.as_os_str().is_empty()
@@ -167,7 +167,7 @@ pub fn write_bundle(
 
     if let Some(password) = password {
         let encryptor =
-            age::Encryptor::with_user_passphrase(SecretString::from(password.to_owned()));
+            age::Encryptor::with_user_passphrase(SecretString::from(password.as_str().to_owned()));
         let encrypted_writer = encryptor
             .wrap_output(output_file)
             .context("failed to initialize age encryptor for bundle")?;
@@ -235,12 +235,14 @@ mod tests {
 
     use super::{BundleAccess, open_bundle_reader, write_bundle};
     use crate::manifest::{Manifest, ManifestObject};
+    use crate::pg::RelationKind;
+    use crate::select_dsl::ProjectionKind;
     use crate::types::DataFormat;
 
     fn test_object(source_name: &str, index: usize) -> ManifestObject {
         let stem = format!("{:04}__public.{source_name}", index + 1);
         ManifestObject {
-            kind: "table".to_owned(),
+            kind: RelationKind::Table,
             source_schema: "public".to_owned(),
             source_name: source_name.to_owned(),
             target_schema: "archive".to_owned(),
@@ -251,7 +253,7 @@ mod tests {
             data_path: format!("data/{stem}.copybin"),
             effective_columns: vec!["id".to_owned()],
             effective_column_types: vec!["bigint".to_owned()],
-            column_projection: "*".to_owned(),
+            column_projection: ProjectionKind::All,
             row_estimate: Some(1),
         }
     }

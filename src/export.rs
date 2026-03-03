@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::env;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -24,7 +25,7 @@ use worker::export_worker;
 pub async fn run(
     config_path: &Path,
     out_path: &Path,
-    cli_concurrency: Option<usize>,
+    cli_concurrency: Option<NonZeroUsize>,
     bundle_password: Option<&str>,
     source_config: tokio_postgres::Config,
     progress_enabled: bool,
@@ -43,7 +44,7 @@ pub async fn run(
     std::fs::create_dir_all(scratch.path().join("ddl"))?;
     std::fs::create_dir_all(scratch.path().join("data"))?;
 
-    let export_result = if concurrency == 1 {
+    let export_result = if concurrency.get() == 1 {
         run_with_snapshot_support(&client, config.general.consistent_snapshot, false, |_| {
             export_objects(&client, &config, &scratch, &progress)
         })
@@ -59,7 +60,7 @@ pub async fn run(
                     &config,
                     &scratch,
                     &progress,
-                    concurrency,
+                    concurrency.get(),
                     snapshot_id,
                 )
             },
@@ -95,7 +96,7 @@ pub async fn run(
             &bundle_scratch_path,
             &bundle_out_path,
             &bundle_manifest,
-            bundle_password.as_deref(),
+            bundle_password.as_ref(),
         )
     })
     .await
@@ -113,13 +114,10 @@ pub async fn run(
 }
 
 fn resolve_export_concurrency(
-    cli_concurrency: Option<usize>,
+    cli_concurrency: Option<NonZeroUsize>,
     general: &GeneralConfig,
-) -> Result<usize> {
+) -> Result<NonZeroUsize> {
     if let Some(concurrency) = cli_concurrency {
-        if concurrency == 0 {
-            bail!("export concurrency must be >= 1");
-        }
         return Ok(concurrency);
     }
 
@@ -136,13 +134,9 @@ fn resolve_export_concurrency(
                 return Ok(general.concurrency);
             }
 
-            let parsed = trimmed.parse::<usize>().map_err(|_| {
+            let parsed = trimmed.parse::<NonZeroUsize>().map_err(|_| {
                 anyhow::anyhow!("invalid {env_name} value '{trimmed}', expected integer >= 1")
             })?;
-            if parsed == 0 {
-                bail!("invalid {env_name} value '0', expected integer >= 1");
-            }
-
             Ok(parsed)
         }
         Err(env::VarError::NotPresent) => Ok(general.concurrency),

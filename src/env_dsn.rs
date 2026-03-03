@@ -1,5 +1,6 @@
 use anyhow::{Result, bail};
 use std::env;
+use std::num::NonZeroU16;
 use tokio_postgres::Config;
 
 /// CLI-переопределения параметров подключения к PostgreSQL.
@@ -8,7 +9,7 @@ use tokio_postgres::Config;
 #[derive(Debug, Clone, Default)]
 pub struct ConnectionOverrides {
     pub host: Option<String>,
-    pub port: Option<u16>,
+    pub port: Option<NonZeroU16>,
     pub dbname: Option<String>,
     pub user: Option<String>,
     pub password: Option<String>,
@@ -50,7 +51,7 @@ fn build_default(overrides: &ConnectionOverrides) -> Result<Config> {
 
     let mut config = Config::new();
     config.host(&host);
-    config.port(port);
+    config.port(port.get());
     config.dbname(&dbname);
     config.user(&user);
     if let Some(password) = password.as_deref() {
@@ -68,30 +69,29 @@ fn resolve_string(cli_value: Option<&str>, env_name: &str) -> Result<Option<Stri
     Ok(normalize_non_empty(read_env(env_name)?.as_deref()))
 }
 
-fn resolve_port(cli_port: Option<u16>) -> Result<u16> {
+fn resolve_port(cli_port: Option<NonZeroU16>) -> Result<NonZeroU16> {
     if let Some(port) = cli_port {
         return Ok(port);
     }
 
     // Держим поведение, совместимое с libpq: порт по умолчанию 5432.
     let Some(raw_port) = read_env("PGPORT")? else {
-        return Ok(5432);
+        return Ok(default_port());
     };
 
     let trimmed = raw_port.trim();
     if trimmed.is_empty() {
-        return Ok(5432);
+        return Ok(default_port());
     }
 
-    let parsed = trimmed.parse::<u16>().map_err(|_| {
+    trimmed.parse::<NonZeroU16>().map_err(|_| {
         anyhow::anyhow!("invalid PGPORT value '{trimmed}', expected integer in 1..65535")
-    })?;
+    })
+}
 
-    if parsed == 0 {
-        bail!("invalid PGPORT value '0', expected integer in 1..65535");
-    }
-
-    Ok(parsed)
+fn default_port() -> NonZeroU16 {
+    // compile-time constant in practice; wrapped in fn to keep call sites explicit.
+    NonZeroU16::new(5432).expect("default PostgreSQL port must be non-zero")
 }
 
 fn normalize_non_empty(value: Option<&str>) -> Option<String> {

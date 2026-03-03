@@ -1,6 +1,7 @@
+use std::num::NonZeroUsize;
 use std::{fmt, path::Path};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::ValueEnum;
 
 use crate::bundle_io;
@@ -44,16 +45,12 @@ impl fmt::Display for ImportMode {
 pub async fn run(
     bundle_path: &Path,
     mode: ImportMode,
-    concurrency: usize,
+    concurrency: NonZeroUsize,
     ddl_only: bool,
     bundle_password: Option<&str>,
     target_config: tokio_postgres::Config,
     progress_enabled: bool,
 ) -> Result<()> {
-    if concurrency == 0 {
-        bail!("import concurrency must be >= 1");
-    }
-
     let access = bundle_io::resolve_access(bundle_path, bundle_password)?;
     let client = pg::connect(&target_config).await?;
     let target_version_num = if ddl_only {
@@ -63,7 +60,7 @@ pub async fn run(
     };
 
     // DDL-only всегда выполняем потоково: это избегает дорогой распаковки data/* на диск.
-    if ddl_only || concurrency == 1 {
+    if ddl_only || concurrency.get() == 1 {
         stream::import_objects_streaming(
             bundle_path,
             &client,
@@ -96,7 +93,7 @@ pub async fn run(
         scratch.path(),
         &manifest,
         mode,
-        concurrency,
+        concurrency.get(),
         ddl_only,
         progress_enabled,
     )

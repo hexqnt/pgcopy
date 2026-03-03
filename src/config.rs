@@ -1,10 +1,10 @@
-use std::path::Path;
+use std::{num::NonZeroUsize, path::Path};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::select_dsl::SelectDsl;
-use crate::sql::ensure_identifier;
+use crate::sql::Identifier;
 use crate::types::DataFormat;
 
 /// Нормализованный конфиг экспорта после валидации TOML.
@@ -24,9 +24,16 @@ pub struct GeneralConfig {
     /// Включает REPEATABLE READ snapshot для согласованного чтения.
     pub consistent_snapshot: bool,
     /// Количество параллельных workers.
-    pub concurrency: usize,
+    pub concurrency: NonZeroUsize,
     /// `true`, если значение concurrency пришло из TOML, а не из дефолта.
     pub concurrency_from_toml: bool,
+}
+
+/// Явное переименование target-объекта.
+#[derive(Debug, Clone)]
+pub struct TargetOverride {
+    pub schema: Identifier,
+    pub name: Identifier,
 }
 
 /// Описание одного объекта экспорта.
@@ -36,10 +43,8 @@ pub struct ObjectConfig {
     pub select_raw: String,
     /// Распарсенная и нормализованная форма `select_raw`.
     pub select: SelectDsl,
-    /// Явно заданная целевая схема (опционально).
-    pub target_schema: Option<String>,
-    /// Явно заданное целевое имя объекта (опционально).
-    pub target_name: Option<String>,
+    /// Явное переименование target-объекта.
+    pub target: Option<TargetOverride>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,7 +63,7 @@ struct RawGeneral {
     compression: String,
     #[serde(default = "default_true")]
     consistent_snapshot: bool,
-    concurrency: Option<usize>,
+    concurrency: Option<NonZeroUsize>,
 }
 
 impl Default for RawGeneral {
@@ -91,8 +96,8 @@ fn default_compression() -> String {
     "zstd".to_owned()
 }
 
-fn default_concurrency() -> usize {
-    1
+const fn default_concurrency() -> NonZeroUsize {
+    NonZeroUsize::MIN
 }
 
 pub fn load(path: &Path) -> Result<Config> {
@@ -115,40 +120,22 @@ pub fn load(path: &Path) -> Result<Config> {
         );
     }
 
-    if parsed.general.concurrency == Some(0) {
-        bail!("config validation error: general.concurrency must be >= 1");
-    }
-
     let mut objects = Vec::with_capacity(parsed.objects.len());
     for (index, object) in parsed.objects.into_iter().enumerate() {
-        if object.select.trim().is_empty() {
+        let select_raw = object.select.trim();
+        if select_raw.is_empty() {
             bail!("config validation error: objects[{index}].select must not be empty");
         }
 
-        if object.target_schema.is_some() ^ object.target_name.is_some() {
-            bail!(
-                "config validation error: objects[{index}] must set both target_schema and target_name or neither"
-            );
-        }
+        let target = parse_target_override(index, object.target_schema, object.target_name)?;
 
-        if let Some(target_schema) = object.target_schema.as_deref() {
-            ensure_identifier(target_schema, "target_schema")
-                .with_context(|| format!("config validation error in objects[{index}]"))?;
-        }
-
-        if let Some(target_name) = object.target_name.as_deref() {
-            ensure_identifier(target_name, "target_name")
-                .with_context(|| format!("config validation error in objects[{index}]"))?;
-        }
-
-        let select = SelectDsl::parse(&object.select)
+        let select = SelectDsl::parse(select_raw)
             .with_context(|| format!("config validation error in objects[{index}].select"))?;
 
         objects.push(ObjectConfig {
-            select_raw: object.select.trim().to_owned(),
+            select_raw: select_raw.to_owned(),
             select,
-            target_schema: object.target_schema,
-            target_name: object.target_name,
+            target,
         });
     }
 
@@ -167,4 +154,24 @@ pub fn load(path: &Path) -> Result<Config> {
         },
         objects,
     })
+}
+
+fn parse_target_override(
+    index: usize,
+    target_schema: Option<String>,
+    target_name: Option<String>,
+) -> Result<Option<TargetOverride>> {
+    match (target_schema, target_name) {
+        (None, None) => Ok(None),
+        (Some(schema), Some(name)) => {
+            let schema = Identifier::parse(&schema, "target_schema")
+                .with_context(|| format!("config validation error in objects[{index}]"))?;
+            let name = Identifier::parse(&name, "target_name")
+                .with_context(|| format!("config validation error in objects[{index}]"))?;
+            Ok(Some(TargetOverride { schema, name }))
+        }
+        _ => bail!(
+            "config validation error: objects[{index}] must set both target_schema and target_name or neither"
+        ),
+    }
 }

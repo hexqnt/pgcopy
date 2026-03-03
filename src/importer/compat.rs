@@ -89,6 +89,8 @@ pub(super) async fn validate_existing_table_compatibility(
 mod tests {
     use super::validate_data_compatibility;
     use crate::manifest::{Manifest, ManifestObject};
+    use crate::pg::RelationKind;
+    use crate::select_dsl::ProjectionKind;
     use crate::types::DataFormat;
 
     fn manifest_for_compat(data_format: DataFormat, source_pg_version_num: i32) -> Manifest {
@@ -100,7 +102,7 @@ mod tests {
             data_format,
             consistent_snapshot: true,
             objects: vec![ManifestObject {
-                kind: "table".to_owned(),
+                kind: RelationKind::Table,
                 source_schema: "public".to_owned(),
                 source_name: "orders".to_owned(),
                 target_schema: "archive".to_owned(),
@@ -111,7 +113,7 @@ mod tests {
                 data_path: "data/0001__public.orders.copybin".to_owned(),
                 effective_columns: vec!["id".to_owned()],
                 effective_column_types: vec!["bigint".to_owned()],
-                column_projection: "*".to_owned(),
+                column_projection: ProjectionKind::All,
                 row_estimate: Some(10),
             }],
         }

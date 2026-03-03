@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::pg::RelationKind;
+use crate::select_dsl::ProjectionKind;
 use crate::types::DataFormat;
 
 /// Метаданные bundle.
@@ -25,7 +27,7 @@ pub struct Manifest {
 /// Метаданные одного выгруженного объекта.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestObject {
-    pub kind: String,
+    pub kind: RelationKind,
     pub source_schema: String,
     pub source_name: String,
     pub target_schema: String,
@@ -37,7 +39,7 @@ pub struct ManifestObject {
     pub effective_columns: Vec<String>,
     #[serde(default)]
     pub effective_column_types: Vec<String>,
-    pub column_projection: String,
+    pub column_projection: ProjectionKind,
     pub row_estimate: Option<i64>,
 }
 
@@ -79,11 +81,12 @@ pub fn parse_manifest(manifest_raw: &str, manifest_source: &str) -> Result<Manif
             );
         }
 
-        let target_key = format!("{}.{}", object.target_schema, object.target_name);
-        if !seen_targets.insert(target_key.clone()) {
+        let target_key = (object.target_schema.as_str(), object.target_name.as_str());
+        if !seen_targets.insert(target_key) {
             bail!(
-                "manifest validation error: duplicate target object {} at objects[{index}]",
-                target_key
+                "manifest validation error: duplicate target object {}.{} at objects[{index}]",
+                object.target_schema,
+                object.target_name
             );
         }
     }

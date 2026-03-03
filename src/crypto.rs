@@ -7,19 +7,33 @@ use anyhow::{Context, Result, bail};
 
 const AGE_MAGIC_PREFIX: &[u8] = b"age-encryption.org/v1";
 
+/// Невалидный (пустой) пароль не допускается на уровне типа.
+#[derive(Debug, Clone)]
+pub struct BundlePassword(String);
+
+impl BundlePassword {
+    fn parse(value: &str, source: &str) -> Result<Self> {
+        if value.is_empty() {
+            bail!("{source} must not be empty");
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Возвращает пароль для bundle из CLI или окружения.
 ///
 /// Приоритет: `--password` -> `PASSWORD`.
-pub fn resolve_bundle_password(cli_password: Option<&str>) -> Result<Option<String>> {
+pub fn resolve_bundle_password(cli_password: Option<&str>) -> Result<Option<BundlePassword>> {
     if let Some(password) = cli_password {
-        if password.is_empty() {
-            bail!("--password must not be empty");
-        }
-        return Ok(Some(password.to_owned()));
+        return BundlePassword::parse(password, "--password").map(Some);
     }
 
     match env::var("PASSWORD") {
-        Ok(value) if !value.is_empty() => Ok(Some(value)),
+        Ok(value) if !value.is_empty() => BundlePassword::parse(&value, "PASSWORD").map(Some),
         Ok(_) | Err(env::VarError::NotPresent) => Ok(None),
         Err(env::VarError::NotUnicode(_)) => {
             bail!("environment variable 'PASSWORD' contains non-Unicode data")

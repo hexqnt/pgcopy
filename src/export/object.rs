@@ -6,7 +6,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::config::ObjectConfig;
 use crate::manifest::ManifestObject;
-use crate::pg::{self, RelationKind};
+use crate::pg;
 use crate::types::DataFormat;
 
 /// Экспортирует один объект в scratch-структуру и формирует запись manifest.
@@ -21,7 +21,7 @@ pub async fn export_object(
     let source_name = object.select.source_name.clone();
 
     let relation_kind = pg::relation_kind(client, &source_schema, &source_name).await?;
-    let (target_schema, target_name) = resolve_target_names(object, relation_kind);
+    let (target_schema, target_name) = resolve_target_names(object);
 
     let all_defs = pg::relation_column_defs(client, &source_schema, &source_name).await?;
     let source_columns = all_defs
@@ -84,7 +84,7 @@ pub async fn export_object(
     let row_estimate = pg::row_estimate(client, &source_schema, &source_name).await?;
 
     Ok(ManifestObject {
-        kind: relation_kind.as_str().to_owned(),
+        kind: relation_kind,
         source_schema,
         source_name,
         target_schema,
@@ -95,7 +95,7 @@ pub async fn export_object(
         data_path,
         effective_columns,
         effective_column_types,
-        column_projection: object.select.projection_kind().to_owned(),
+        column_projection: object.select.projection_kind(),
         row_estimate,
     })
 }
@@ -106,9 +106,13 @@ pub fn validate_target_collisions(objects: &[ManifestObject]) -> Result<()> {
 
     let mut seen = HashSet::new();
     for object in objects {
-        let key = format!("{}.{}", object.target_schema, object.target_name);
-        if !seen.insert(key.clone()) {
-            bail!("target name collision detected for {key}");
+        let key = (object.target_schema.as_str(), object.target_name.as_str());
+        if !seen.insert(key) {
+            bail!(
+                "target name collision detected for {}.{}",
+                object.target_schema,
+                object.target_name
+            );
         }
     }
 
@@ -122,51 +126,47 @@ fn data_file_suffix(data_format: DataFormat) -> &'static str {
     }
 }
 
-fn resolve_target_names(object: &ObjectConfig, relation_kind: RelationKind) -> (String, String) {
-    match relation_kind {
-        RelationKind::Table | RelationKind::View | RelationKind::MaterializedView => (
-            object
-                .target_schema
-                .clone()
-                .unwrap_or_else(|| object.select.source_schema.clone()),
-            object
-                .target_name
-                .clone()
-                .unwrap_or_else(|| object.select.source_name.clone()),
-        ),
+fn resolve_target_names(object: &ObjectConfig) -> (String, String) {
+    if let Some(target) = object.target.as_ref() {
+        return (target.schema.to_string(), target.name.to_string());
     }
+
+    (
+        object.select.source_schema.clone(),
+        object.select.source_name.clone(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::resolve_target_names;
-    use crate::config::ObjectConfig;
-    use crate::pg::RelationKind;
+    use crate::config::{ObjectConfig, TargetOverride};
     use crate::select_dsl::SelectDsl;
+    use crate::sql::Identifier;
 
     fn object_without_target(select: &str) -> ObjectConfig {
         ObjectConfig {
             select_raw: select.to_owned(),
             select: SelectDsl::parse(select).expect("select should be valid"),
-            target_schema: None,
-            target_name: None,
+            target: None,
         }
     }
 
     #[test]
-    fn materialized_view_uses_default_target_names() {
+    fn default_target_names_follow_source() {
         let object = object_without_target("select * from reporting.sales_daily_mv");
-        let names = resolve_target_names(&object, RelationKind::MaterializedView);
+        let names = resolve_target_names(&object);
         assert_eq!(names, ("reporting".to_owned(), "sales_daily_mv".to_owned()));
     }
 
     #[test]
-    fn plain_view_uses_default_target_names() {
-        let object = object_without_target("select * from reporting.sales_daily_view");
-        let names = resolve_target_names(&object, RelationKind::View);
-        assert_eq!(
-            names,
-            ("reporting".to_owned(), "sales_daily_view".to_owned())
-        );
+    fn explicit_target_names_override_source() {
+        let mut object = object_without_target("select * from reporting.sales_daily_view");
+        object.target = Some(TargetOverride {
+            schema: Identifier::parse("archive", "target_schema").expect("valid schema"),
+            name: Identifier::parse("sales_copy", "target_name").expect("valid name"),
+        });
+        let names = resolve_target_names(&object);
+        assert_eq!(names, ("archive".to_owned(), "sales_copy".to_owned()));
     }
 }

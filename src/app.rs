@@ -48,7 +48,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 startup::print_import_startup_details(
                     &input,
                     mode,
-                    concurrency,
+                    concurrency.get(),
                     ddl_only,
                     &target_config,
                     startup_color,

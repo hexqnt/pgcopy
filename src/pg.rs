@@ -1,13 +1,15 @@
-use std::{collections::HashMap, fmt::Write as _};
+use std::{collections::HashMap, fmt, fmt::Write as _};
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use tokio_postgres::{Client, Config, NoTls, Row};
 
 use crate::sql::{quote_ident, quoted_fq_name};
 use crate::types::DataFormat;
 
 /// Тип PostgreSQL-реляции, поддерживаемый инструментом.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RelationKind {
     Table,
     View,
@@ -22,6 +24,12 @@ impl RelationKind {
             Self::View => "view",
             Self::MaterializedView => "materialized_view",
         }
+    }
+}
+
+impl fmt::Display for RelationKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

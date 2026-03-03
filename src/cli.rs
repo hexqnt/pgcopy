@@ -1,3 +1,4 @@
+use std::num::{NonZeroU16, NonZeroUsize};
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
@@ -42,7 +43,7 @@ pub(crate) struct PgConnectionArgs {
         value_name = "PORT",
         help = "PostgreSQL port (fallback: PGPORT, default: 5432)"
     )]
-    port: Option<u16>,
+    port: Option<NonZeroU16>,
     #[arg(
         long,
         value_name = "DBNAME",
@@ -109,7 +110,7 @@ Encrypted bundle:\n\
             value_name = "N",
             help = "Export concurrency (priority: CLI --concurrency > config general.concurrency > PGCOPY_CONCURRENCY env)"
         )]
-        concurrency: Option<usize>,
+        concurrency: Option<NonZeroUsize>,
         #[arg(
             long,
             value_name = "PASSWORD",
@@ -150,10 +151,10 @@ DDL only:\n\
             long,
             visible_alias = "concurency",
             value_name = "N",
-            default_value_t = 1,
+            default_value_t = NonZeroUsize::MIN,
             help = "Import concurrency (number of objects processed in parallel)"
         )]
-        concurrency: usize,
+        concurrency: NonZeroUsize,
         #[arg(
             long,
             help = "Create target tables from bundle DDL only (skip data loading)"
