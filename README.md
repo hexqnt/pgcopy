@@ -26,9 +26,24 @@
 ## Демо
 
 Экспорт:
+
+```sh
+export PGHOST=company-host
+export PGPORT=5432
+export PGUSER=pguser
+export PGPASSWORD=pgpassword
+export PGDATABASE=company-dwh
+pgcopy export --config config.toml --out bundle.tar.zst
+```
+
 ![Экспорт](images/export.gif "export")
 
 Импорт:
+
+```sh
+pgcopy import --in bundle.tar.zst  --host localhost --dbname gas_dwh --username pguser --pgpassword pguser
+```
+
 ![Импорт](images/import.gif "import")
 
 ## Быстрый старт
