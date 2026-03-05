@@ -90,9 +90,10 @@ async fn import_objects_layout_v2<R: Read>(
                 load::load_object(client, object, mode, ddl_sql, || async {
                     let mut data_entry =
                         crate::bundle_io::next_required_entry(entries, &object.data_path)?;
-                    copy_stream::copy_data_in_reader(
+                    let mut source = copy_stream::ReaderChunkSource::new(&mut data_entry);
+                    copy_stream::copy_data_in(
                         client,
-                        &mut data_entry,
+                        &mut source,
                         &object.target_schema,
                         &object.target_name,
                         &object.effective_columns,

@@ -1,6 +1,46 @@
 use anyhow::{Context, Result};
 use std::future::Future;
 
+/// Универсальная ошибка bucket-worker с привязкой к исходной задаче.
+pub(crate) struct WorkerFailure<TTask> {
+    pub(crate) task: TTask,
+    pub(crate) error: anyhow::Error,
+}
+
+/// Универсальный результат bucket-worker:
+/// завершённые задачи плюс первая фатальная ошибка (если была).
+pub(crate) struct WorkerOutcome<TTask, TResult> {
+    pub(crate) completed: Vec<(usize, TResult)>,
+    pub(crate) failure: Option<WorkerFailure<TTask>>,
+}
+
+impl<TTask, TResult> WorkerOutcome<TTask, TResult> {
+    pub(crate) fn empty() -> Self {
+        Self {
+            completed: Vec::new(),
+            failure: None,
+        }
+    }
+
+    pub(crate) fn success(completed: Vec<(usize, TResult)>) -> Self {
+        Self {
+            completed,
+            failure: None,
+        }
+    }
+
+    pub(crate) fn with_failure(
+        completed: Vec<(usize, TResult)>,
+        task: TTask,
+        error: anyhow::Error,
+    ) -> Self {
+        Self {
+            completed,
+            failure: Some(WorkerFailure { task, error }),
+        }
+    }
+}
+
 pub(crate) fn bucketize_indexed<T: Clone>(items: &[T], concurrency: usize) -> Vec<Vec<(usize, T)>> {
     let workers_count = concurrency.min(items.len());
     if workers_count == 0 {

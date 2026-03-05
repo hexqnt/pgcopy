@@ -4,23 +4,15 @@ use anyhow::{Context, Result};
 
 use crate::config::ObjectConfig;
 use crate::manifest::ManifestObject;
+use crate::parallel_workers::WorkerOutcome;
 use crate::pg;
 use crate::types::DataFormat;
 
 use super::object::export_object;
 
-/// Ошибка worker-а экспорта с привязкой к объекту.
-pub struct ExportWorkerFailure {
-    pub object: ObjectConfig,
-    pub error: anyhow::Error,
-}
-
-/// Результат выполнения worker-а:
-/// успешно обработанные объекты плюс первая фатальная ошибка (если была).
-pub struct ExportWorkerOutcome {
-    pub completed: Vec<(usize, ManifestObject)>,
-    pub failure: Option<ExportWorkerFailure>,
-}
+/// Результат worker-а экспорта:
+/// completed содержит готовые manifest-объекты; failure — первая фатальная ошибка.
+pub type ExportWorkerOutcome = WorkerOutcome<ObjectConfig, ManifestObject>;
 
 /// Выполняет экспорт выделенного набора объектов одним worker-подключением.
 pub async fn export_worker(
@@ -31,10 +23,7 @@ pub async fn export_worker(
     snapshot_id: Option<&str>,
 ) -> ExportWorkerOutcome {
     let Some((_, first_object)) = tasks.first().cloned() else {
-        return ExportWorkerOutcome {
-            completed: Vec::new(),
-            failure: None,
-        };
+        return ExportWorkerOutcome::empty();
     };
 
     let mut completed = Vec::with_capacity(tasks.len());
@@ -43,13 +32,11 @@ pub async fn export_worker(
     let client = match pg::connect(source_config).await {
         Ok(client) => client,
         Err(error) => {
-            return ExportWorkerOutcome {
+            return ExportWorkerOutcome::with_failure(
                 completed,
-                failure: Some(ExportWorkerFailure {
-                    object: first_object,
-                    error: error.context("failed to connect source database for parallel export"),
-                }),
-            };
+                first_object,
+                error.context("failed to connect source database for parallel export"),
+            );
         }
     };
 
@@ -60,25 +47,21 @@ pub async fn export_worker(
             .batch_execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .await
         {
-            return ExportWorkerOutcome {
+            return ExportWorkerOutcome::with_failure(
                 completed,
-                failure: Some(ExportWorkerFailure {
-                    object: first_object,
-                    error: anyhow::Error::new(error)
-                        .context("failed to begin parallel export snapshot transaction"),
-                }),
-            };
+                first_object,
+                anyhow::Error::new(error)
+                    .context("failed to begin parallel export snapshot transaction"),
+            );
         }
 
         if let Err(error) = set_transaction_snapshot(&client, snapshot_id).await {
             let _ = client.batch_execute("ROLLBACK").await;
-            return ExportWorkerOutcome {
+            return ExportWorkerOutcome::with_failure(
                 completed,
-                failure: Some(ExportWorkerFailure {
-                    object: first_object,
-                    error: error.context("failed to set parallel export snapshot"),
-                }),
-            };
+                first_object,
+                error.context("failed to set parallel export snapshot"),
+            );
         }
     }
 
@@ -98,10 +81,7 @@ pub async fn export_worker(
                     let _ = client.batch_execute("ROLLBACK").await;
                 }
 
-                return ExportWorkerOutcome {
-                    completed,
-                    failure: Some(ExportWorkerFailure { object, error }),
-                };
+                return ExportWorkerOutcome::with_failure(completed, object, error);
             }
         }
     }
@@ -110,20 +90,15 @@ pub async fn export_worker(
         && let Err(error) = client.batch_execute("COMMIT").await
     {
         let object = last_object.expect("last task must exist for non-empty worker");
-        return ExportWorkerOutcome {
+        return ExportWorkerOutcome::with_failure(
             completed,
-            failure: Some(ExportWorkerFailure {
-                object,
-                error: anyhow::Error::new(error)
-                    .context("failed to commit parallel export snapshot transaction"),
-            }),
-        };
+            object,
+            anyhow::Error::new(error)
+                .context("failed to commit parallel export snapshot transaction"),
+        );
     }
 
-    ExportWorkerOutcome {
-        completed,
-        failure: None,
-    }
+    ExportWorkerOutcome::success(completed)
 }
 
 async fn set_transaction_snapshot(

@@ -228,7 +228,7 @@ async fn export_objects_parallel(
             }
 
             if let Some(failure) = outcome.failure {
-                progress.set_object_error(&failure.object, failure.error.as_ref());
+                progress.set_object_error(&failure.task, failure.error.as_ref());
                 return Err(failure.error);
             }
 

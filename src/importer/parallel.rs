@@ -3,23 +3,14 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::manifest::{Manifest, ManifestObject};
-use crate::parallel_workers;
+use crate::parallel_workers::{self, WorkerOutcome};
 use crate::types::DataFormat;
 
 use super::{ImportMode, copy_stream, load, progress::ImportProgress};
 
-/// Ошибка worker-а импорта с привязкой к объекту.
-struct ImportWorkerFailure {
-    object: ManifestObject,
-    error: anyhow::Error,
-}
-
-/// Результат выполнения worker-а:
-/// успешно обработанные объекты плюс первая фатальная ошибка (если была).
-struct ImportWorkerOutcome {
-    completed: Vec<(usize, u64)>,
-    failure: Option<ImportWorkerFailure>,
-}
+/// Результат worker-а импорта:
+/// completed содержит количество загруженных строк по объектам.
+type ImportWorkerOutcome = WorkerOutcome<ManifestObject, u64>;
 
 /// Импортирует объекты из распакованного bundle параллельно по bucket-ам.
 pub async fn import_objects_parallel(
@@ -66,7 +57,7 @@ pub async fn import_objects_parallel(
             }
 
             if let Some(failure) = outcome.failure {
-                progress.set_object_error(&failure.object, failure.error.as_ref());
+                progress.set_object_error(&failure.task, failure.error.as_ref());
                 return Err(failure.error);
             }
 
@@ -92,10 +83,7 @@ async fn import_worker(
     ddl_only: bool,
 ) -> ImportWorkerOutcome {
     let Some((_, first_object)) = tasks.first().cloned() else {
-        return ImportWorkerOutcome {
-            completed: Vec::new(),
-            failure: None,
-        };
+        return ImportWorkerOutcome::empty();
     };
 
     let mut completed = Vec::with_capacity(tasks.len());
@@ -105,15 +93,7 @@ async fn import_worker(
         .with_context(|| "failed to connect target database for parallel import worker".to_owned());
     let client = match client {
         Ok(client) => client,
-        Err(error) => {
-            return ImportWorkerOutcome {
-                completed,
-                failure: Some(ImportWorkerFailure {
-                    object: first_object,
-                    error,
-                }),
-            };
-        }
+        Err(error) => return ImportWorkerOutcome::with_failure(completed, first_object, error),
     };
 
     for (index, object) in tasks {
@@ -129,19 +109,11 @@ async fn import_worker(
             });
         match imported {
             Ok(inserted_rows) => completed.push((index, inserted_rows)),
-            Err(error) => {
-                return ImportWorkerOutcome {
-                    completed,
-                    failure: Some(ImportWorkerFailure { object, error }),
-                };
-            }
+            Err(error) => return ImportWorkerOutcome::with_failure(completed, object, error),
         }
     }
 
-    ImportWorkerOutcome {
-        completed,
-        failure: None,
-    }
+    ImportWorkerOutcome::success(completed)
 }
 
 async fn import_object(
@@ -160,9 +132,10 @@ async fn import_object(
 
     let data_path = scratch_dir.join(&object.data_path);
     let inserted_rows = load::load_object(client, object, mode, &ddl_sql, || async {
-        copy_stream::copy_data_in_file(
+        let mut source = copy_stream::FileChunkSource::open(&data_path).await?;
+        copy_stream::copy_data_in(
             client,
-            &data_path,
+            &mut source,
             &object.target_schema,
             &object.target_name,
             &object.effective_columns,
