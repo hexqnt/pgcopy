@@ -122,8 +122,8 @@ Encrypted bundle:\n\
     },
     #[command(
         about = "Import bundle into target PostgreSQL database",
-        long_about = "Reads bundle file, validates compatibility, creates target tables, and loads data\n\
-into the target PostgreSQL database. Use --ddl-only to create tables without loading rows.\n\
+        long_about = "Reads bundle file, validates compatibility, creates target objects, and loads data\n\
+into the target PostgreSQL database. Use --ddl-only to create target objects without loading rows.\n\
 Parallel import concurrency is configured via --concurrency."
     )]
     #[command(after_help = "Example:\n\
@@ -144,7 +144,7 @@ DDL only:\n\
             long,
             value_name = "MODE",
             default_value = "replace",
-            help = "Import strategy for existing target tables"
+            help = "Import strategy for existing target objects"
         )]
         mode: importer::ImportMode,
         #[arg(
@@ -157,7 +157,7 @@ DDL only:\n\
         concurrency: NonZeroUsize,
         #[arg(
             long,
-            help = "Create target tables from bundle DDL only (skip data loading)"
+            help = "Create target objects from bundle DDL only (skip data loading)"
         )]
         ddl_only: bool,
         #[arg(

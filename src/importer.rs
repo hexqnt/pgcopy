@@ -1,7 +1,7 @@
 use std::num::NonZeroUsize;
 use std::{fmt, path::Path};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 
 use crate::bundle_io;
@@ -18,11 +18,13 @@ mod stream;
 mod target_table;
 
 /// Режим импорта при наличии объекта в target.
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ImportMode {
-    #[value(help = "Drop and recreate target table before loading data")]
+    #[value(help = "Drop and recreate target object before loading data")]
     Replace,
-    #[value(help = "Keep existing target table and append data after compatibility checks")]
+    #[value(
+        help = "Keep existing target table and append data after compatibility checks (tables only)"
+    )]
     Append,
 }
 
@@ -87,6 +89,16 @@ pub async fn run(
     .context("parallel import bundle unpack task failed")??;
 
     let manifest = bundle_io::read_manifest_from_dir(scratch.path())?;
+    if concurrency.get() > 1
+        && manifest
+            .objects
+            .iter()
+            .any(|object| !object.requires_data_load())
+    {
+        bail!(
+            "parallel import with --concurrency > 1 is not supported for bundles containing view objects; rerun with --concurrency 1"
+        );
+    }
     compat::validate_data_compatibility(&manifest, target_version_num)?;
     parallel::import_objects_parallel(
         &target_config,

@@ -237,12 +237,13 @@ mod tests {
     use crate::manifest::{Manifest, ManifestObject};
     use crate::pg::RelationKind;
     use crate::select_dsl::ProjectionKind;
-    use crate::types::DataFormat;
+    use crate::types::{DataFormat, ExportAs};
 
     fn test_object(source_name: &str, index: usize) -> ManifestObject {
         let stem = format!("{:04}__public.{source_name}", index + 1);
         ManifestObject {
             kind: RelationKind::Table,
+            export_as: ExportAs::Table,
             source_schema: "public".to_owned(),
             source_name: source_name.to_owned(),
             target_schema: "archive".to_owned(),

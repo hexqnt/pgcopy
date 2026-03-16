@@ -42,6 +42,14 @@ pub struct ColumnDef {
     pub default_expr: Option<String>,
 }
 
+/// Минимальная ссылка на relation в source БД.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationRef {
+    pub schema: String,
+    pub name: String,
+    pub kind: RelationKind,
+}
+
 /// Устанавливает подключение к PostgreSQL и запускает background-task драйвера.
 pub async fn connect(config: &Config) -> Result<Client> {
     let (client, connection) = config
@@ -227,6 +235,94 @@ pub async fn row_estimate(client: &Client, schema: &str, name: &str) -> Result<O
     Ok(row.map(|row| row.get(0)))
 }
 
+/// Возвращает SQL-определение view (только тело SELECT) через pg_get_viewdef.
+pub async fn view_definition_sql(client: &Client, schema: &str, name: &str) -> Result<String> {
+    let row = client
+        .query_opt(
+            "
+            SELECT pg_catalog.pg_get_viewdef(c.oid, true)
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1
+              AND c.relname = $2
+              AND c.relkind = 'v'
+            ",
+            &[&schema, &name],
+        )
+        .await
+        .with_context(|| format!("failed to fetch view definition for {schema}.{name}"))?;
+
+    let view_sql = row
+        .map(|row| row.get::<_, String>(0))
+        .with_context(|| format!("source relation {schema}.{name} is not a view"))?;
+    Ok(view_sql)
+}
+
+/// Возвращает транзитивные зависимости view по relation-объектам (table/view/mview).
+pub async fn view_dependencies_transitive(
+    client: &Client,
+    schema: &str,
+    name: &str,
+) -> Result<Vec<RelationRef>> {
+    let rows = client
+        .query(
+            "
+            WITH RECURSIVE deps AS (
+                SELECT c.oid, n.nspname, c.relname, c.relkind::text, 0::int AS depth
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = $1
+                  AND c.relname = $2
+                  AND c.relkind = 'v'
+
+                UNION ALL
+
+                SELECT c_dep.oid, n_dep.nspname, c_dep.relname, c_dep.relkind::text, deps.depth + 1
+                FROM deps
+                JOIN pg_rewrite rw ON rw.ev_class = deps.oid
+                JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass
+                                AND d.objid = rw.oid
+                                AND d.refclassid = 'pg_class'::regclass
+                                AND d.deptype = 'n'
+                JOIN pg_class c_dep ON c_dep.oid = d.refobjid
+                JOIN pg_namespace n_dep ON n_dep.oid = c_dep.relnamespace
+                WHERE c_dep.relkind IN ('r', 'p', 'f', 'v', 'm')
+                  AND c_dep.oid <> deps.oid
+            )
+            SELECT nspname, relname, relkind
+            FROM (
+                SELECT
+                    oid,
+                    nspname,
+                    relname,
+                    relkind,
+                    MAX(depth) AS max_depth
+                FROM deps
+                WHERE depth > 0
+                GROUP BY oid, nspname, relname, relkind
+            ) ranked
+            ORDER BY max_depth DESC, nspname, relname
+            ",
+            &[&schema, &name],
+        )
+        .await
+        .with_context(|| format!("failed to resolve dependencies for view {schema}.{name}"))?;
+
+    rows.into_iter()
+        .map(|row| {
+            let dep_schema = row.get::<_, String>(0);
+            let dep_name = row.get::<_, String>(1);
+            let relkind = row.get::<_, String>(2);
+            let kind = relation_kind_from_relkind(&relkind, &dep_schema, &dep_name)?;
+            Ok(RelationRef {
+                schema: dep_schema,
+                name: dep_name,
+                kind,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+}
+
 /// Выбирает определения только для эффективного списка колонок.
 pub fn pick_column_defs(
     all_defs: &[ColumnDef],
@@ -318,6 +414,15 @@ pub fn create_table_ddl(target_schema: &str, target_name: &str, columns: &[Colum
     ddl
 }
 
+/// Генерирует DDL view для импорта.
+pub fn create_view_ddl(target_schema: &str, target_name: &str, view_sql: &str) -> String {
+    let normalized_view_sql = view_sql.trim().trim_end_matches(';');
+    format!(
+        "CREATE VIEW {} AS\n{normalized_view_sql};\n",
+        quoted_fq_name(target_schema, target_name)
+    )
+}
+
 /// Формирует SQL для `COPY ... TO STDOUT`.
 pub fn copy_out_sql(normalized_select_sql: &str, data_format: DataFormat) -> String {
     format!(
@@ -375,7 +480,7 @@ fn relation_kind_from_relkind(relkind: &str, schema: &str, name: &str) -> Result
 #[cfg(test)]
 mod tests {
     use super::{
-        ColumnDef, RelationKind, copy_in_sql, copy_out_sql, create_table_ddl,
+        ColumnDef, RelationKind, copy_in_sql, copy_out_sql, create_table_ddl, create_view_ddl,
         relation_kind_from_relkind,
     };
     use crate::types::DataFormat;
@@ -455,5 +560,18 @@ mod tests {
 
         assert!(!ddl.contains("CREATE SEQUENCE"));
         assert!(ddl.contains("\"created_at\" timestamp with time zone DEFAULT now() NOT NULL"));
+    }
+
+    #[test]
+    fn builds_view_ddl() {
+        let ddl = create_view_ddl(
+            "archive",
+            "sales_view",
+            "SELECT id, amount FROM reporting.sales_daily",
+        );
+        assert_eq!(
+            ddl,
+            "CREATE VIEW \"archive\".\"sales_view\" AS\nSELECT id, amount FROM reporting.sales_daily;\n"
+        );
     }
 }

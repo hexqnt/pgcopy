@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::pg::RelationKind;
 use crate::select_dsl::ProjectionKind;
-use crate::types::DataFormat;
+use crate::types::{DataFormat, ExportAs};
 
 /// Метаданные bundle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +28,8 @@ pub struct Manifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestObject {
     pub kind: RelationKind,
+    #[serde(default)]
+    pub export_as: ExportAs,
     pub source_schema: String,
     pub source_name: String,
     pub target_schema: String,
@@ -41,6 +43,12 @@ pub struct ManifestObject {
     pub effective_column_types: Vec<String>,
     pub column_projection: ProjectionKind,
     pub row_estimate: Option<i64>,
+}
+
+impl ManifestObject {
+    pub const fn requires_data_load(&self) -> bool {
+        self.export_as.requires_data_payload()
+    }
 }
 
 /// Парсит и валидирует manifest, защищая импорт от неконсистентных bundle.

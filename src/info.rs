@@ -74,13 +74,14 @@ fn print_text(bundle_path: &Path, is_encrypted: bool, manifest: &Manifest, show_
 
     for (index, object) in manifest.objects.iter().enumerate() {
         println!(
-            "{}. {}.{} -> {}.{} ({})",
+            "{}. {}.{} -> {}.{} (source_kind={}, export_as={})",
             index + 1,
             object.source_schema,
             object.source_name,
             object.target_schema,
             object.target_name,
-            object.kind
+            object.kind,
+            object.export_as,
         );
         println!("   projection: {}", object.column_projection);
         println!("   columns: {}", object.effective_columns.join(", "));

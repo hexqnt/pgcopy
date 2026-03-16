@@ -51,10 +51,13 @@ pgcopy import --in bundle.tar.zst  --host localhost --dbname gas_dwh --username 
 1. Составьте `config.toml` со списком объектов.
 2. Укажите параметры подключения к PostgreSQL через CLI или env (см. ниже).
 3. На исходной БД выполните экспорт:
+
    ```bash
    pgcopy export --config ./config.toml --out ./bundle.tar.zst
    ```
+
 4. На целевой стороне выполните импорт:
+
    ```bash
    pgcopy import --in ./bundle.tar.zst --mode replace
    ```
@@ -200,6 +203,10 @@ target_name = "sales_daily"
 
 [[objects]]
 select = "select * from public.orders where created_at >= date '2026-01-01'"
+
+[[objects]]
+select = "select * from reporting.v_sales_daily"
+export_as = "view"
 ```
 
 ### Общие настройки (`[general]`)
@@ -215,6 +222,10 @@ select = "select * from public.orders where created_at >= date '2026-01-01'"
 - `target_schema` и `target_name`: опционально переопределяют имя целевого объекта.
   Если задаете — задавайте **оба** поля, иначе конфиг не пройдет валидацию.
   Если не заданы — используются `schema/name` источника.
+- `export_as`: `table` (по умолчанию) или `view`.
+  - `table`: текущий режим snapshot/materialize (`SELECT -> CREATE TABLE + COPY`).
+  - `view`: в bundle сохраняется `CREATE VIEW`, а зависимости этой view автоматически добавляются в экспорт как таблицы.
+    Для `export_as = "view"` разрешен только вид `select * from schema.object` (без `WHERE/ORDER BY/LIMIT`).
 
 ### `select` DSL
 
@@ -247,6 +258,7 @@ select = "select * from public.orders where created_at >= date '2026-01-01'"
 - Для `data_format = "csv"` проверка по major-версии PostgreSQL не применяется.
 - Для колонок с `DEFAULT nextval(...::regclass)` создается target-local sequence, и после импорта sequence
   синхронизируется с `MAX(column)` загруженных данных.
+- Для bundle, содержащих объекты с `export_as = "view"`, импорт нужно запускать с `--concurrency 1`.
 - `export` поддерживает параллелизм через `--concurrency` (алиас `--concurency`) и разрешает значение так:
   `CLI > general.concurrency из TOML > PGCOPY_CONCURRENCY > 1`.
 - Для `import` параллелизм задается CLI-флагом `--concurrency` (по умолчанию `1`).

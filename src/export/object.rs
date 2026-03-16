@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -6,8 +7,8 @@ use tokio::io::AsyncWriteExt;
 
 use crate::config::ObjectConfig;
 use crate::manifest::ManifestObject;
-use crate::pg;
-use crate::types::DataFormat;
+use crate::pg::{self, RelationKind};
+use crate::types::{DataFormat, ExportAs};
 
 /// Экспортирует один объект в scratch-структуру и формирует запись manifest.
 pub async fn export_object(
@@ -17,34 +18,11 @@ pub async fn export_object(
     object: &ObjectConfig,
     data_format: DataFormat,
 ) -> Result<ManifestObject> {
-    let source_schema = object.select.source_schema.clone();
-    let source_name = object.select.source_name.clone();
+    let source_schema = object.source_schema().to_owned();
+    let source_name = object.source_name().to_owned();
 
     let relation_kind = pg::relation_kind(client, &source_schema, &source_name).await?;
     let (target_schema, target_name) = resolve_target_names(object);
-
-    let all_defs = pg::relation_column_defs(client, &source_schema, &source_name).await?;
-    let source_columns = all_defs
-        .iter()
-        .map(|definition| definition.name.clone())
-        .collect::<Vec<_>>();
-    let effective_columns = object
-        .select
-        .effective_columns(&source_columns)
-        .with_context(|| {
-            format!("failed to build effective columns for {source_schema}.{source_name}")
-        })?;
-    let selected_defs =
-        pg::pick_column_defs(&all_defs, &effective_columns, &source_schema, &source_name)?;
-    let effective_column_types = selected_defs
-        .iter()
-        .map(|definition| definition.type_sql.clone())
-        .collect::<Vec<_>>();
-
-    let normalized_select = object.select.normalized_select_sql(&effective_columns);
-    let copy_out_sql = pg::copy_out_sql(&normalized_select, data_format);
-    let ddl_sql = pg::create_table_ddl(&target_schema, &target_name, &selected_defs);
-
     let stem = format!("{:04}__{source_schema}.{source_name}", index + 1);
     let ddl_path = format!("ddl/{stem}.sql");
     let data_path = format!("data/{stem}.{}", data_file_suffix(data_format));
@@ -59,32 +37,121 @@ pub async fn export_object(
         std::fs::create_dir_all(parent)?;
     }
 
-    tokio::fs::write(&ddl_file, ddl_sql)
-        .await
-        .with_context(|| format!("failed to write DDL file {}", ddl_file.display()))?;
+    let (effective_columns, effective_column_types, normalized_select, row_estimate) = match object
+        .export_as
+    {
+        ExportAs::Table => {
+            let all_defs = pg::relation_column_defs(client, &source_schema, &source_name).await?;
+            let source_columns = all_defs
+                .iter()
+                .map(|definition| definition.name.clone())
+                .collect::<Vec<_>>();
+            let effective_columns = object
+                .select
+                .effective_columns(&source_columns)
+                .with_context(|| {
+                    format!("failed to build effective columns for {source_schema}.{source_name}")
+                })?;
+            let selected_defs =
+                pg::pick_column_defs(&all_defs, &effective_columns, &source_schema, &source_name)?;
+            let effective_column_types = selected_defs
+                .iter()
+                .map(|definition| definition.type_sql.clone())
+                .collect::<Vec<_>>();
+            let normalized_select = object.select.normalized_select_sql(&effective_columns);
 
-    let mut output = tokio::fs::File::create(&data_file)
-        .await
-        .with_context(|| format!("failed to create data file {}", data_file.display()))?;
+            let ddl_sql = pg::create_table_ddl(&target_schema, &target_name, &selected_defs);
+            tokio::fs::write(&ddl_file, ddl_sql)
+                .await
+                .with_context(|| format!("failed to write DDL file {}", ddl_file.display()))?;
 
-    let copy_stream = client
-        .copy_out(&copy_out_sql)
-        .await
-        .with_context(|| format!("failed to execute COPY OUT for {source_schema}.{source_name}"))?;
-    pin_mut!(copy_stream);
+            let copy_out_sql = pg::copy_out_sql(&normalized_select, data_format);
+            let mut output = tokio::fs::File::create(&data_file)
+                .await
+                .with_context(|| format!("failed to create data file {}", data_file.display()))?;
 
-    while let Some(chunk) = copy_stream.as_mut().try_next().await? {
-        output
-            .write_all(&chunk)
-            .await
-            .with_context(|| format!("failed to write data chunk to {}", data_file.display()))?;
-    }
-    output.flush().await?;
+            let copy_stream = client.copy_out(&copy_out_sql).await.with_context(|| {
+                format!("failed to execute COPY OUT for {source_schema}.{source_name}")
+            })?;
+            pin_mut!(copy_stream);
 
-    let row_estimate = pg::row_estimate(client, &source_schema, &source_name).await?;
+            while let Some(chunk) = copy_stream.as_mut().try_next().await? {
+                output.write_all(&chunk).await.with_context(|| {
+                    format!("failed to write data chunk to {}", data_file.display())
+                })?;
+            }
+            output.flush().await?;
+
+            let row_estimate = pg::row_estimate(client, &source_schema, &source_name).await?;
+            (
+                effective_columns,
+                effective_column_types,
+                normalized_select,
+                row_estimate,
+            )
+        }
+        ExportAs::View => {
+            if relation_kind != RelationKind::View {
+                bail!(
+                    "export_as='view' requires source relation {}.{} to be a view, got {}",
+                    source_schema,
+                    source_name,
+                    relation_kind.as_str()
+                );
+            }
+
+            let source_columns_with_types =
+                pg::relation_columns_with_types(client, &source_schema, &source_name).await?;
+            let source_columns = source_columns_with_types
+                .iter()
+                .map(|(column, _)| column.clone())
+                .collect::<Vec<_>>();
+            let effective_columns = object
+                .select
+                .effective_columns(&source_columns)
+                .with_context(|| {
+                    format!("failed to build effective columns for {source_schema}.{source_name}")
+                })?;
+            let source_types_by_name = source_columns_with_types
+                .iter()
+                .map(|(column, type_sql)| (column.as_str(), type_sql.as_str()))
+                .collect::<HashMap<_, _>>();
+            let mut effective_column_types = Vec::with_capacity(effective_columns.len());
+            for column in &effective_columns {
+                let type_sql = source_types_by_name
+                    .get(column.as_str())
+                    .with_context(|| {
+                        format!(
+                            "column type metadata for {source_schema}.{source_name}.{column} is missing"
+                        )
+                    })?
+                    .to_string();
+                effective_column_types.push(type_sql);
+            }
+            let normalized_select = object.select.normalized_select_sql(&effective_columns);
+
+            let view_sql = pg::view_definition_sql(client, &source_schema, &source_name).await?;
+            let ddl_sql = pg::create_view_ddl(&target_schema, &target_name, &view_sql);
+            tokio::fs::write(&ddl_file, ddl_sql)
+                .await
+                .with_context(|| format!("failed to write DDL file {}", ddl_file.display()))?;
+
+            tokio::fs::File::create(&data_file)
+                .await
+                .with_context(|| format!("failed to create data file {}", data_file.display()))?;
+
+            (
+                effective_columns,
+                effective_column_types,
+                normalized_select,
+                None,
+            )
+        }
+    };
 
     Ok(ManifestObject {
         kind: relation_kind,
+        export_as: object.export_as,
         source_schema,
         source_name,
         target_schema,
@@ -143,12 +210,14 @@ mod tests {
     use crate::config::{ObjectConfig, TargetOverride};
     use crate::select_dsl::SelectDsl;
     use crate::sql::Identifier;
+    use crate::types::ExportAs;
 
     fn object_without_target(select: &str) -> ObjectConfig {
         ObjectConfig {
             select_raw: select.to_owned(),
             select: SelectDsl::parse(select).expect("select should be valid"),
             target: None,
+            export_as: ExportAs::Table,
         }
     }
 

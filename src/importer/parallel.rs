@@ -129,6 +129,10 @@ async fn import_object(
         load::prepare_object_ddl_only(client, object, mode, &ddl_sql).await?;
         return Ok(0);
     }
+    if !object.requires_data_load() {
+        load::prepare_object_ddl_only(client, object, mode, &ddl_sql).await?;
+        return Ok(0);
+    }
 
     let data_path = scratch_dir.join(&object.data_path);
     let inserted_rows = load::load_object(client, object, mode, &ddl_sql, || async {

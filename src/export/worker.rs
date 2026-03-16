@@ -69,12 +69,8 @@ pub async fn export_worker(
         last_object = Some(object.clone());
         match export_object(&client, scratch_dir, index, &object, data_format)
             .await
-            .with_context(|| {
-                format!(
-                    "export object {}.{} failed",
-                    object.select.source_schema, object.select.source_name
-                )
-            }) {
+            .with_context(|| format!("export object {} failed", object.source_label()))
+        {
             Ok(manifest_object) => completed.push((index, manifest_object)),
             Err(error) => {
                 if snapshot_id.is_some() {

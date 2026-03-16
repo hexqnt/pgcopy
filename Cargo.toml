@@ -1,6 +1,6 @@
 [package]
 name = "pgcopy"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "CLI tool to export selected PostgreSQL objects into a bundle and import them into another database."
 authors = ["hexqnt <kvover@gmail.org>"]
@@ -15,13 +15,13 @@ age = "0.11.1"
 anyhow = "1.0.100"
 bytes = "1.10.1"
 chrono = { version = "0.4.42", features = ["serde"] }
-clap = { version = "4.5.47", features = ["derive"] }
+clap = { version = "4.6.0", features = ["derive"] }
 futures-util = "0.3.31"
 indicatif = "0.18.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 tar = "0.4.44"
-tempfile = "3.23.0"
+tempfile = "3.27.0"
 tokio = { version = "1.50.0", features = [
     "macros",
     "rt-multi-thread",
@@ -29,9 +29,9 @@ tokio = { version = "1.50.0", features = [
     "io-util",
 ] }
 tokio-postgres = "0.7.15"
-toml = "1.0.3"
+toml = "1.0.6"
 tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
 zstd = "0.13.3"
 
 [profile.release]

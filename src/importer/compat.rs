@@ -9,6 +9,14 @@ pub(super) fn validate_data_compatibility(
     manifest: &Manifest,
     target_version_num: i32,
 ) -> Result<()> {
+    if !manifest
+        .objects
+        .iter()
+        .any(ManifestObject::requires_data_load)
+    {
+        return Ok(());
+    }
+
     match manifest.data_format {
         DataFormat::Binary => {
             // PostgreSQL binary COPY не гарантирует совместимость между major-версиями.
@@ -91,7 +99,7 @@ mod tests {
     use crate::manifest::{Manifest, ManifestObject};
     use crate::pg::RelationKind;
     use crate::select_dsl::ProjectionKind;
-    use crate::types::DataFormat;
+    use crate::types::{DataFormat, ExportAs};
 
     fn manifest_for_compat(data_format: DataFormat, source_pg_version_num: i32) -> Manifest {
         Manifest {
@@ -103,6 +111,7 @@ mod tests {
             consistent_snapshot: true,
             objects: vec![ManifestObject {
                 kind: RelationKind::Table,
+                export_as: ExportAs::Table,
                 source_schema: "public".to_owned(),
                 source_name: "orders".to_owned(),
                 target_schema: "archive".to_owned(),

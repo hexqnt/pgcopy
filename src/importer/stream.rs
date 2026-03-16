@@ -86,6 +86,19 @@ async fn import_objects_layout_v2<R: Read>(
             let imported_rows = if ddl_only {
                 load::prepare_object_ddl_only(client, object, mode, ddl_sql).await?;
                 0
+            } else if !object.requires_data_load() {
+                load::prepare_object_ddl_only(client, object, mode, ddl_sql).await?;
+                let mut data_entry =
+                    crate::bundle_io::next_required_entry(entries, &object.data_path)?;
+                // Для view payload data отсутствует; entry читаем, чтобы сохранить строгий layout.
+                let _ =
+                    std::io::copy(&mut data_entry, &mut std::io::sink()).with_context(|| {
+                        format!(
+                            "failed to consume data entry '{}' from bundle",
+                            object.data_path
+                        )
+                    })?;
+                0
             } else {
                 load::load_object(client, object, mode, ddl_sql, || async {
                     let mut data_entry =

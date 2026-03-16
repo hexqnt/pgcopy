@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::config::{Config, ObjectConfig};
+use crate::config::ObjectConfig;
 use crate::manifest::ManifestObject;
 use crate::progress::{ProgressUi, StatusTone, object_label, one_line_error};
 
@@ -10,20 +10,14 @@ pub(super) struct ExportProgress {
 }
 
 impl ExportProgress {
-    pub(super) fn new(config: &Config, enabled: bool) -> Self {
-        let ui = ProgressUi::new(
-            (config.objects.len() + 1) as u64,
-            enabled,
-            "preparing export",
-        );
+    pub(super) fn new(objects_count: usize, enabled: bool) -> Self {
+        let ui = ProgressUi::new((objects_count + 1) as u64, enabled, "preparing export");
         Self { ui }
     }
 
     pub(super) fn set_object_running(&self, object: &ObjectConfig) {
-        self.ui.set_message(format!(
-            "exporting {}.{}",
-            object.select.source_schema, object.select.source_name
-        ));
+        self.ui
+            .set_message(format!("exporting {}", object.source_label()));
     }
 
     pub(super) fn set_object_done(&self, manifest_object: &ManifestObject) {
@@ -38,11 +32,9 @@ impl ExportProgress {
     }
 
     pub(super) fn set_object_error(&self, object: &ObjectConfig, error: &dyn std::error::Error) {
-        self.ui.set_message(format!(
-            "failed {}.{}",
-            object.select.source_schema, object.select.source_name
-        ));
-        let label = object_label(&object.select.source_schema, &object.select.source_name);
+        self.ui
+            .set_message(format!("failed {}", object.source_label()));
+        let label = object_label(object.source_schema(), object.source_name());
         self.ui.print_status_line(
             &label,
             &format!("[x] error: {}", one_line_error(error)),
