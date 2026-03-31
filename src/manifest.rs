@@ -126,12 +126,12 @@ mod tests {
         })
     }
 
-    fn manifest_raw_with_objects(objects: Vec<Value>) -> String {
+    fn manifest_raw_with_objects(objects: &[Value]) -> String {
         json!({
             "format_version": 2,
             "created_at": "2026-02-19T10:00:00Z",
             "source_fingerprint": "database=app user=app",
-            "source_pg_version_num": 150002,
+            "source_pg_version_num": 150_002,
             "data_format": "binary",
             "consistent_snapshot": true,
             "objects": objects
@@ -141,7 +141,8 @@ mod tests {
 
     #[test]
     fn parses_valid_manifest() {
-        let raw = manifest_raw_with_objects(vec![base_object("archive", "orders")]);
+        let objects = vec![base_object("archive", "orders")];
+        let raw = manifest_raw_with_objects(&objects);
         let manifest = parse_manifest(&raw, "inline manifest").expect("manifest should parse");
         assert_eq!(manifest.format_version, 2);
         assert_eq!(manifest.objects.len(), 1);
@@ -151,10 +152,11 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_target_objects() {
-        let raw = manifest_raw_with_objects(vec![
+        let objects = vec![
             base_object("archive", "orders"),
             base_object("archive", "orders"),
-        ]);
+        ];
+        let raw = manifest_raw_with_objects(&objects);
         let error = parse_manifest(&raw, "inline manifest")
             .expect_err("duplicate target objects must fail validation");
         assert!(
@@ -169,7 +171,8 @@ mod tests {
         let mut object = base_object("archive", "orders");
         object["effective_columns"] = json!(["id", "status"]);
         object["effective_column_types"] = json!(["bigint"]);
-        let raw = manifest_raw_with_objects(vec![object]);
+        let objects = vec![object];
+        let raw = manifest_raw_with_objects(&objects);
 
         let error = parse_manifest(&raw, "inline manifest")
             .expect_err("mismatched effective_column_types must fail validation");
@@ -182,10 +185,9 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_format_version() {
-        let mut root: Value = serde_json::from_str(&manifest_raw_with_objects(vec![base_object(
-            "archive", "orders",
-        )]))
-        .expect("test json must parse");
+        let objects = vec![base_object("archive", "orders")];
+        let mut root: Value = serde_json::from_str(&manifest_raw_with_objects(&objects))
+            .expect("test json must parse");
         root["format_version"] = json!(1);
 
         let error = parse_manifest(&root.to_string(), "inline manifest")

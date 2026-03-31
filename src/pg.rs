@@ -50,7 +50,7 @@ pub struct RelationRef {
     pub kind: RelationKind,
 }
 
-/// Устанавливает подключение к PostgreSQL и запускает background-task драйвера.
+/// Устанавливает подключение к `PostgreSQL` и запускает background-task драйвера.
 pub async fn connect(config: &Config) -> Result<Client> {
     let (client, connection) = config
         .connect(NoTls)
@@ -235,7 +235,7 @@ pub async fn row_estimate(client: &Client, schema: &str, name: &str) -> Result<O
     Ok(row.map(|row| row.get(0)))
 }
 
-/// Возвращает SQL-определение view (только тело SELECT) через pg_get_viewdef.
+/// Возвращает SQL-определение view (только тело SELECT) через `pg_get_viewdef`.
 pub async fn view_definition_sql(client: &Client, schema: &str, name: &str) -> Result<String> {
     let row = client
         .query_opt(

@@ -305,10 +305,10 @@ async fn build_export_plan(
                 && object.export_as == ExportAs::View
                 && object.target.is_none()
             {
-                let required_by_ref = existing
-                    .required_by_view_index
-                    .map(|view_index| format!("objects[{view_index}]"))
-                    .unwrap_or_else(|| "another export_as='view' object".to_owned());
+                let required_by_ref = existing.required_by_view_index.map_or_else(
+                    || "another export_as='view' object".to_owned(),
+                    |view_index| format!("objects[{view_index}]"),
+                );
                 bail!(
                     "config validation error: objects[{index}] export_as='view' for source {}.{} conflicts with auto-added dependency table for the same source (required by {required_by_ref}); set target_schema/target_name for one of these objects to avoid target name collision",
                     object.source_schema(),
@@ -324,10 +324,10 @@ async fn build_export_plan(
                     continue;
                 }
 
-                let required_by_ref = existing
-                    .required_by_view_index
-                    .map(|view_index| format!("objects[{view_index}]"))
-                    .unwrap_or_else(|| "another export_as='view' object".to_owned());
+                let required_by_ref = existing.required_by_view_index.map_or_else(
+                    || "another export_as='view' object".to_owned(),
+                    |view_index| format!("objects[{view_index}]"),
+                );
                 bail!(
                     "config validation error: objects[{index}] for source {}.{} conflicts with auto-added dependency table (required by {required_by_ref}): {}; to use default target names, this object must satisfy dependency rules",
                     object.source_schema(),
@@ -349,7 +349,7 @@ async fn build_export_plan(
 
         seen_sources.insert(
             source_key,
-            SeenSource::from_config(index, compatibility_issues),
+            SeenSource::from_config(index, &compatibility_issues),
         );
         planned.push(object.clone());
     }
@@ -395,7 +395,7 @@ impl SeenSource {
         }
     }
 
-    fn from_config(config_index: usize, compatibility_issues: Vec<&'static str>) -> Self {
+    fn from_config(config_index: usize, compatibility_issues: &[&'static str]) -> Self {
         let incompatibility_reason =
             (!compatibility_issues.is_empty()).then(|| compatibility_issues.join(", "));
         Self {

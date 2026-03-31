@@ -197,9 +197,7 @@ fn parse_unquoted_identifier_with_start(
         if index == 0 {
             if !is_start(ch) {
                 bail!(
-                    "invalid identifier start '{}': expected {} or quoted identifier",
-                    ch,
-                    start_hint
+                    "invalid identifier start '{ch}': expected {start_hint} or quoted identifier"
                 );
             }
             consumed = index + ch.len_utf8();

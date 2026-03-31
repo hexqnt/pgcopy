@@ -3,7 +3,7 @@ use std::env;
 use std::num::NonZeroU16;
 use tokio_postgres::Config;
 
-/// CLI-переопределения параметров подключения к PostgreSQL.
+/// CLI-переопределения параметров подключения к `PostgreSQL`.
 ///
 /// Приоритет источников для каждого поля: CLI -> переменная окружения -> дефолт (если есть).
 #[derive(Debug, Clone, Default)]
@@ -15,7 +15,7 @@ pub struct ConnectionOverrides {
     pub password: Option<String>,
 }
 
-/// Строит конфигурацию подключения к PostgreSQL.
+/// Строит конфигурацию подключения к `PostgreSQL`.
 pub fn config(overrides: &ConnectionOverrides) -> Result<Config> {
     build_default(overrides)
 }

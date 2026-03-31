@@ -17,10 +17,7 @@ pub(super) async fn sync_table_sequences(
 
     let sql = build_batch_sync_sql(target_schema, target_name, &sequence_columns);
     client.batch_execute(&sql).await.with_context(|| {
-        format!(
-            "failed to synchronize serial/identity sequences for {}.{}",
-            target_schema, target_name
-        )
+        format!("failed to synchronize serial/identity sequences for {target_schema}.{target_name}")
     })?;
     Ok(())
 }
@@ -64,8 +61,7 @@ async fn resolve_sequence_columns(
         .await
         .with_context(|| {
             format!(
-                "failed to resolve serial/identity sequence mapping for {}.{}",
-                target_schema, target_name
+                "failed to resolve serial/identity sequence mapping for {target_schema}.{target_name}"
             )
         })?;
 

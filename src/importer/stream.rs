@@ -156,6 +156,6 @@ fn read_ddl_entry<R: Read>(entries: &mut tar::Entries<'_, R>, ddl_path: &str) ->
     let mut ddl_sql = String::new();
     ddl_entry
         .read_to_string(&mut ddl_sql)
-        .with_context(|| format!("failed to read DDL entry '{}' from bundle", ddl_path))?;
+        .with_context(|| format!("failed to read DDL entry '{ddl_path}' from bundle"))?;
     Ok(ddl_sql)
 }

@@ -278,7 +278,7 @@ mod tests {
             format_version: 2,
             created_at: "2026-03-02T12:00:00Z".to_owned(),
             source_fingerprint: Some("database=app user=app".to_owned()),
-            source_pg_version_num: 150002,
+            source_pg_version_num: 150_002,
             data_format: DataFormat::Binary,
             consistent_snapshot: true,
             objects: vec![object_a.clone(), object_b.clone()],

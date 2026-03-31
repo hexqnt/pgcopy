@@ -43,7 +43,7 @@ impl fmt::Display for ImportMode {
     }
 }
 
-/// Выполняет импорт bundle в target PostgreSQL.
+/// Выполняет импорт bundle в target `PostgreSQL`.
 pub async fn run(
     bundle_path: &Path,
     mode: ImportMode,

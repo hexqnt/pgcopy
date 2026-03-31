@@ -130,15 +130,15 @@ mod tests {
 
     #[test]
     fn binary_compatibility_passes_for_same_major() {
-        let manifest = manifest_for_compat(DataFormat::Binary, 150002);
-        validate_data_compatibility(&manifest, 150099)
+        let manifest = manifest_for_compat(DataFormat::Binary, 150_002);
+        validate_data_compatibility(&manifest, 150_099)
             .expect("binary format should be compatible on same major version");
     }
 
     #[test]
     fn binary_compatibility_fails_for_different_major() {
-        let manifest = manifest_for_compat(DataFormat::Binary, 140012);
-        let error = validate_data_compatibility(&manifest, 150001)
+        let manifest = manifest_for_compat(DataFormat::Binary, 140_012);
+        let error = validate_data_compatibility(&manifest, 150_001)
             .expect_err("binary format must fail across major versions");
         assert!(
             error
@@ -149,8 +149,8 @@ mod tests {
 
     #[test]
     fn csv_compatibility_ignores_major_version_difference() {
-        let manifest = manifest_for_compat(DataFormat::Csv, 140012);
-        validate_data_compatibility(&manifest, 160003)
+        let manifest = manifest_for_compat(DataFormat::Csv, 140_012);
+        validate_data_compatibility(&manifest, 160_003)
             .expect("csv format should ignore major version difference");
     }
 }

@@ -32,7 +32,7 @@ impl fmt::Display for InfoOutputFormat {
     }
 }
 
-/// Печатает метаинформацию о bundle без подключения к PostgreSQL.
+/// Печатает метаинформацию о bundle без подключения к `PostgreSQL`.
 pub fn run(
     bundle_path: &Path,
     bundle_password: Option<&str>,
