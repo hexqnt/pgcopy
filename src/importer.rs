@@ -1,4 +1,5 @@
 use std::num::NonZeroUsize;
+use std::time::Instant;
 use std::{fmt, path::Path};
 
 use anyhow::{Context, Result, bail};
@@ -53,6 +54,7 @@ pub async fn run(
     target_config: tokio_postgres::Config,
     progress_enabled: bool,
 ) -> Result<()> {
+    let operation_started_at = Instant::now();
     let access = bundle_io::resolve_access(bundle_path, bundle_password)?;
     let client = pg::connect(&target_config).await?;
     let target_version_num = if ddl_only {
@@ -73,6 +75,7 @@ pub async fn run(
                 target_version_num,
                 progress_enabled,
             },
+            operation_started_at,
         )
         .await?;
         return Ok(());
@@ -104,10 +107,13 @@ pub async fn run(
         &target_config,
         scratch.path(),
         &manifest,
-        mode,
-        concurrency.get(),
-        ddl_only,
-        progress_enabled,
+        parallel::ImportParallelOptions {
+            mode,
+            concurrency: concurrency.get(),
+            ddl_only,
+            operation_started_at,
+            progress_enabled,
+        },
     )
     .await?;
 

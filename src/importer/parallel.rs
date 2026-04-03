@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -8,20 +9,38 @@ use crate::types::DataFormat;
 
 use super::{ImportMode, copy_stream, load, progress::ImportProgress};
 
+/// Результат импорта одного объекта внутри worker-а.
+struct ImportObjectResult {
+    inserted_rows: u64,
+    elapsed: Duration,
+}
+
 /// Результат worker-а импорта:
-/// completed содержит количество загруженных строк по объектам.
-type ImportWorkerOutcome = WorkerOutcome<ManifestObject, u64>;
+/// completed содержит количество загруженных строк по объектам и время обработки.
+type ImportWorkerOutcome = WorkerOutcome<ManifestObject, ImportObjectResult>;
+
+pub(super) struct ImportParallelOptions {
+    pub(super) mode: ImportMode,
+    pub(super) concurrency: usize,
+    pub(super) ddl_only: bool,
+    pub(super) operation_started_at: Instant,
+    pub(super) progress_enabled: bool,
+}
 
 /// Импортирует объекты из распакованного bundle параллельно по bucket-ам.
 pub async fn import_objects_parallel(
     target_config: &tokio_postgres::Config,
     scratch_dir: &Path,
     manifest: &Manifest,
-    mode: ImportMode,
-    concurrency: usize,
-    ddl_only: bool,
-    progress_enabled: bool,
+    options: ImportParallelOptions,
 ) -> Result<u64> {
+    let ImportParallelOptions {
+        mode,
+        concurrency,
+        ddl_only,
+        operation_started_at,
+        progress_enabled,
+    } = options;
     let data_format = manifest.data_format;
     let progress = ImportProgress::new(manifest, progress_enabled);
 
@@ -51,9 +70,13 @@ pub async fn import_objects_parallel(
         &mut workers,
         "parallel import worker task failed",
         |outcome| {
-            for (index, inserted_rows) in outcome.completed {
-                total_rows += inserted_rows;
-                progress.set_object_done(&manifest.objects[index], inserted_rows);
+            for (index, result) in outcome.completed {
+                total_rows += result.inserted_rows;
+                progress.set_object_done(
+                    &manifest.objects[index],
+                    result.inserted_rows,
+                    result.elapsed,
+                );
             }
 
             if let Some(failure) = outcome.failure {
@@ -70,7 +93,7 @@ pub async fn import_objects_parallel(
         return Err(error);
     }
 
-    progress.finish_done(total_rows);
+    progress.finish_done(total_rows, operation_started_at.elapsed());
     Ok(total_rows)
 }
 
@@ -97,6 +120,7 @@ async fn import_worker(
     };
 
     for (index, object) in tasks {
+        let object_started_at = Instant::now();
         let imported = import_object(&client, scratch_dir, &object, mode, data_format, ddl_only)
             .await
             .with_context(|| {
@@ -108,7 +132,13 @@ async fn import_worker(
                 )
             });
         match imported {
-            Ok(inserted_rows) => completed.push((index, inserted_rows)),
+            Ok(inserted_rows) => completed.push((
+                index,
+                ImportObjectResult {
+                    inserted_rows,
+                    elapsed: object_started_at.elapsed(),
+                },
+            )),
             Err(error) => return ImportWorkerOutcome::with_failure(completed, object, error),
         }
     }

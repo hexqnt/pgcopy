@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -10,9 +11,15 @@ use crate::types::DataFormat;
 
 use super::object::export_object;
 
+/// Результат экспорта одного объекта внутри worker-а.
+pub struct ExportObjectResult {
+    pub manifest_object: ManifestObject,
+    pub elapsed: Duration,
+}
+
 /// Результат worker-а экспорта:
-/// completed содержит готовые manifest-объекты; failure — первая фатальная ошибка.
-pub type ExportWorkerOutcome = WorkerOutcome<ObjectConfig, ManifestObject>;
+/// completed содержит готовые manifest-объекты и время обработки; failure — первая фатальная ошибка.
+pub type ExportWorkerOutcome = WorkerOutcome<ObjectConfig, ExportObjectResult>;
 
 /// Выполняет экспорт выделенного набора объектов одним worker-подключением.
 pub async fn export_worker(
@@ -67,11 +74,18 @@ pub async fn export_worker(
 
     for (index, object) in tasks {
         last_object = Some(object.clone());
+        let started_at = Instant::now();
         match export_object(&client, scratch_dir, index, &object, data_format)
             .await
             .with_context(|| format!("export object {} failed", object.source_label()))
         {
-            Ok(manifest_object) => completed.push((index, manifest_object)),
+            Ok(manifest_object) => completed.push((
+                index,
+                ExportObjectResult {
+                    manifest_object,
+                    elapsed: started_at.elapsed(),
+                },
+            )),
             Err(error) => {
                 if snapshot_id.is_some() {
                     let _ = client.batch_execute("ROLLBACK").await;

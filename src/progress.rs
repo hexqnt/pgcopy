@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 const OBJECT_LABEL_WIDTH: usize = 42;
@@ -64,6 +66,33 @@ pub(crate) fn one_line_error(error: &dyn std::error::Error) -> String {
     error.to_string().replace('\n', " | ")
 }
 
+pub(crate) fn format_duration_compact(elapsed: Duration) -> String {
+    if elapsed < Duration::from_secs(1) {
+        let millis = elapsed.as_millis();
+        let millis = if millis == 0 && !elapsed.is_zero() {
+            1
+        } else {
+            millis
+        };
+        return format!("{millis}ms");
+    }
+
+    let total_seconds = elapsed.as_secs();
+    if total_seconds < 60 {
+        return format!("{total_seconds}s");
+    }
+
+    let hours = total_seconds / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    let seconds = total_seconds % 60;
+
+    if hours > 0 {
+        return format!("{hours}h {minutes}m {seconds}s");
+    }
+
+    format!("{minutes}m {seconds}s")
+}
+
 fn format_status_line(label: &str, status: &str, tone: StatusTone) -> String {
     let status = truncate_text(status, STATUS_WIDTH);
     let status = colorize_status(&status, tone);
@@ -96,4 +125,57 @@ fn truncate_text(value: &str, width: usize) -> String {
     let mut out = value.chars().take(width - 3).collect::<String>();
     out.push_str("...");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::format_duration_compact;
+
+    #[test]
+    fn formats_duration_under_one_second_as_milliseconds() {
+        assert_eq!(format_duration_compact(Duration::from_millis(850)), "850ms");
+    }
+
+    #[test]
+    fn formats_non_zero_sub_millisecond_duration_as_one_millisecond() {
+        assert_eq!(format_duration_compact(Duration::from_nanos(1)), "1ms");
+    }
+
+    #[test]
+    fn formats_duration_under_one_minute_as_seconds() {
+        assert_eq!(format_duration_compact(Duration::from_secs(42)), "42s");
+    }
+
+    #[test]
+    fn formats_one_second_boundary_as_seconds() {
+        assert_eq!(format_duration_compact(Duration::from_secs(1)), "1s");
+    }
+
+    #[test]
+    fn formats_duration_under_one_hour_as_minutes_and_seconds() {
+        assert_eq!(format_duration_compact(Duration::from_secs(134)), "2m 14s");
+    }
+
+    #[test]
+    fn formats_one_minute_boundary_as_minutes_and_seconds() {
+        assert_eq!(format_duration_compact(Duration::from_secs(60)), "1m 0s");
+    }
+
+    #[test]
+    fn formats_duration_one_hour_or_more_as_hours_minutes_seconds() {
+        assert_eq!(
+            format_duration_compact(Duration::from_secs(3_723)),
+            "1h 2m 3s"
+        );
+    }
+
+    #[test]
+    fn formats_one_hour_boundary_as_hours_minutes_seconds() {
+        assert_eq!(
+            format_duration_compact(Duration::from_secs(3_600)),
+            "1h 0m 0s"
+        );
+    }
 }

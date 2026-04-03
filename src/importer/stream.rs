@@ -1,5 +1,6 @@
 use std::io::Read;
 use std::path::Path;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 
@@ -20,6 +21,7 @@ pub async fn import_objects_streaming(
     bundle_path: &Path,
     client: &tokio_postgres::Client,
     options: ImportStreamOptions,
+    operation_started_at: Instant,
 ) -> Result<u64> {
     let reader = crate::bundle_io::open_bundle_reader(bundle_path, &options.access)?;
     let mut archive = tar::Archive::new(reader);
@@ -30,6 +32,7 @@ pub async fn import_objects_streaming(
         options.ddl_only,
         options.target_version_num,
         options.progress_enabled,
+        operation_started_at,
     )
     .await
 }
@@ -41,6 +44,7 @@ async fn import_from_archive_stream<R: Read>(
     ddl_only: bool,
     target_version_num: i32,
     progress_enabled: bool,
+    operation_started_at: Instant,
 ) -> Result<u64> {
     let mut entries = archive
         .entries()
@@ -54,7 +58,7 @@ async fn import_from_archive_stream<R: Read>(
     let total_rows =
         import_objects_layout_v2(&mut entries, client, mode, ddl_only, &manifest, &progress)
             .await?;
-    progress.finish_done(total_rows);
+    progress.finish_done(total_rows, operation_started_at.elapsed());
     Ok(total_rows)
 }
 
@@ -75,6 +79,7 @@ async fn import_objects_layout_v2<R: Read>(
     let mut total_rows = 0_u64;
     for (index, object) in manifest.objects.iter().enumerate() {
         progress.set_object_running(object);
+        let object_started_at = Instant::now();
         let import_result: Result<u64> = async {
             let ddl_sql = ddl_entries.get(index).with_context(|| {
                 format!(
@@ -138,7 +143,7 @@ async fn import_objects_layout_v2<R: Read>(
         match import_result {
             Ok(inserted_rows) => {
                 total_rows += inserted_rows;
-                progress.set_object_done(object, inserted_rows);
+                progress.set_object_done(object, inserted_rows, object_started_at.elapsed());
             }
             Err(error) => {
                 progress.set_object_error(object, error.as_ref());

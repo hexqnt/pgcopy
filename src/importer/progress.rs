@@ -1,5 +1,9 @@
+use std::time::Duration;
+
 use crate::manifest::{Manifest, ManifestObject};
-use crate::progress::{ProgressUi, StatusTone, object_label, one_line_error};
+use crate::progress::{
+    ProgressUi, StatusTone, format_duration_compact, object_label, one_line_error,
+};
 
 /// Локальный UI-прогресс импорта (stdout/stderr), отделённый от бизнес-логики.
 pub(super) struct ImportProgress {
@@ -19,7 +23,13 @@ impl ImportProgress {
         ));
     }
 
-    pub(super) fn set_object_done(&self, object: &ManifestObject, inserted: u64) {
+    pub(super) fn set_object_done(
+        &self,
+        object: &ManifestObject,
+        inserted: u64,
+        elapsed: Duration,
+    ) {
+        let elapsed = format_duration_compact(elapsed);
         self.ui.inc(1);
         self.ui.set_message(format!(
             "done {}.{}",
@@ -28,7 +38,7 @@ impl ImportProgress {
         let label = object_label(&object.target_schema, &object.target_name);
         self.ui.print_status_line(
             &label,
-            &format!("done ({inserted} rows)"),
+            &format!("done ({inserted} rows, {elapsed})"),
             StatusTone::Success,
         );
     }
@@ -46,9 +56,15 @@ impl ImportProgress {
         );
     }
 
-    pub(super) fn finish_done(&self, total_rows: u64) {
+    pub(super) fn finish_done(&self, total_rows: u64, elapsed: Duration) {
+        let elapsed = format_duration_compact(elapsed);
+        self.ui.print_status_line(
+            "[import]",
+            &format!("done ({total_rows} rows, {elapsed})"),
+            StatusTone::Success,
+        );
         self.ui
-            .finish_with_message(format!("import completed: {total_rows} rows"));
+            .finish_with_message(format!("import completed in {elapsed}: {total_rows} rows"));
     }
 
     pub(super) fn finish_with_error(&self, error: &dyn std::error::Error) {

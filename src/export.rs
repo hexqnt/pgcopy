@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::env;
 use std::num::NonZeroUsize;
 use std::path::Path;
+use std::time::Instant;
 use tempfile::TempDir;
 
 use crate::bundle_io;
@@ -33,6 +34,7 @@ pub async fn run(
     source_config: tokio_postgres::Config,
     progress_enabled: bool,
 ) -> Result<()> {
+    let operation_started_at = Instant::now();
     let config = config::load(config_path)?;
     let concurrency = resolve_export_concurrency(cli_concurrency, &config.general)?;
     let password = crypto::resolve_bundle_password(bundle_password)?;
@@ -113,7 +115,7 @@ pub async fn run(
     .context("bundle writer task failed")?;
     match write_result {
         Ok(()) => {
-            progress.finish_bundle_done(out_path);
+            progress.finish_bundle_done(out_path, operation_started_at.elapsed());
             Ok(())
         }
         Err(error) => {
@@ -167,13 +169,14 @@ async fn export_objects(
 
     for (index, object) in objects.iter().enumerate() {
         progress.set_object_running(object);
+        let object_started_at = Instant::now();
         let manifest_object = export_object(client, scratch.path(), index, object, data_format)
             .await
             .with_context(|| format!("export object {} failed", object.source_label()));
 
         match manifest_object {
             Ok(manifest_object) => {
-                progress.set_object_done(&manifest_object);
+                progress.set_object_done(&manifest_object, object_started_at.elapsed());
                 manifest_objects.push(manifest_object);
             }
             Err(error) => {
@@ -221,9 +224,9 @@ async fn export_objects_parallel(
         &mut workers,
         "parallel export worker task failed",
         |outcome| {
-            for (index, manifest_object) in outcome.completed {
-                progress.set_object_done(&manifest_object);
-                ordered_objects[index] = Some(manifest_object);
+            for (index, result) in outcome.completed {
+                progress.set_object_done(&result.manifest_object, result.elapsed);
+                ordered_objects[index] = Some(result.manifest_object);
             }
 
             if let Some(failure) = outcome.failure {

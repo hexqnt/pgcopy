@@ -1,8 +1,11 @@
 use std::path::Path;
+use std::time::Duration;
 
 use crate::config::ObjectConfig;
 use crate::manifest::ManifestObject;
-use crate::progress::{ProgressUi, StatusTone, object_label, one_line_error};
+use crate::progress::{
+    ProgressUi, StatusTone, format_duration_compact, object_label, one_line_error,
+};
 
 /// Локальный UI-прогресс экспорта (stdout/stderr), отделённый от бизнес-логики.
 pub(super) struct ExportProgress {
@@ -20,15 +23,18 @@ impl ExportProgress {
             .set_message(format!("exporting {}", object.source_label()));
     }
 
-    pub(super) fn set_object_done(&self, manifest_object: &ManifestObject) {
+    pub(super) fn set_object_done(&self, manifest_object: &ManifestObject, elapsed: Duration) {
         self.ui.inc(1);
         self.ui.set_message(format!(
             "done {}.{}",
             manifest_object.source_schema, manifest_object.source_name
         ));
         let label = object_label(&manifest_object.source_schema, &manifest_object.source_name);
-        self.ui
-            .print_status_line(&label, "done", StatusTone::Success);
+        self.ui.print_status_line(
+            &label,
+            &format!("done ({})", format_duration_compact(elapsed)),
+            StatusTone::Success,
+        );
     }
 
     pub(super) fn set_object_error(&self, object: &ObjectConfig, error: &dyn std::error::Error) {
@@ -46,15 +52,18 @@ impl ExportProgress {
         self.ui.set_message("packing bundle".to_owned());
     }
 
-    pub(super) fn finish_bundle_done(&self, out_path: &Path) {
+    pub(super) fn finish_bundle_done(&self, out_path: &Path, elapsed: Duration) {
+        let elapsed = format_duration_compact(elapsed);
         self.ui.inc(1);
         self.ui.print_status_line(
             "[pack]",
-            &format!("done {}", out_path.display()),
+            &format!("done ({elapsed}) {}", out_path.display()),
             StatusTone::Success,
         );
-        self.ui
-            .finish_with_message(format!("export completed: {}", out_path.display()));
+        self.ui.finish_with_message(format!(
+            "export completed in {elapsed}: {}",
+            out_path.display()
+        ));
     }
 
     pub(super) fn finish_bundle_error(&self, out_path: &Path, error: &dyn std::error::Error) {
