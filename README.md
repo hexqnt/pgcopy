@@ -67,8 +67,8 @@ pgcopy import --in bundle.tar.zst  --host localhost --dbname gas_dwh --username 
 Синопсис:
 
 ```bash
-pgcopy export --config <path/to/config.toml> --out <path/to/bundle> [--concurrency N] [--password PASSWORD] [--quiet] [--no-progress]
-pgcopy import --in <path/to/bundle> [--mode replace|append] [--concurrency N] [--ddl-only] [--password PASSWORD] [--quiet] [--no-progress]
+pgcopy export --config <path/to/config.toml> --out <path/to/bundle> [--concurrency N] [--password PASSWORD] [--dry-run] [--quiet] [--no-progress]
+pgcopy import --in <path/to/bundle> [--mode replace|append] [--concurrency N] [--ddl-only] [--password PASSWORD] [--dry-run] [--quiet] [--no-progress]
 pgcopy info --in <path/to/bundle> [--format text|json] [--objects] [--password PASSWORD] [--quiet]
 ```
 
@@ -78,6 +78,7 @@ pgcopy info --in <path/to/bundle> [--format text|json] [--objects] [--password P
 
 - `--quiet`: отключает служебный вывод (баннер запуска и progress bars).
 - `--no-progress`: отключает только progress bars (удобно для CI-логов).
+- `--dry-run`: разрешает параметры и печатает сводку без подключения к PostgreSQL и записи файлов.
 
 ### `export`
 
@@ -120,13 +121,16 @@ pgcopy info --in <path/to/bundle> [--format text|json] [--objects] [--password P
 
 Или через стандартные переменные окружения PostgreSQL:
 
-- `PGHOST`
-- `PGPORT` (по умолчанию `5432`, если не задана)
-- `PGDATABASE`
-- `PGUSER`
-- `PGPASSWORD`
+- `PGHOST` (по умолчанию Unix-сокет / `localhost`, если не задан)
+- `PGPORT` (по умолчанию `5432`, если не задан)
+- `PGDATABASE` (по умолчанию имя пользователя ОС, если не задана)
+- `PGUSER` (по умолчанию имя пользователя ОС, если не задан)
+- `PGPASSWORD` (опционально)
 
-Приоритет значений для подключения: `CLI > env`.
+Если пароль не задан через `--pgpassword` или `PGPASSWORD`, дополнительно используется стандартный `.pgpass`
+(`~/.pgpass` на Unix, `%APPDATA%\postgres\pgpass.conf` на Windows).
+
+Приоритет параметров подключения: `CLI > env > defaults`. Для пароля: `CLI > env > .pgpass`.
 
 Пример через env:
 

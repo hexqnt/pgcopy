@@ -22,7 +22,7 @@ pub(crate) fn print_startup_banner() -> bool {
     color
 }
 
-fn print_startup_detail(label: &str, value: impl fmt::Display, color: bool) {
+pub(crate) fn print_startup_detail(label: &str, value: impl fmt::Display, color: bool) {
     if color {
         eprintln!("\x1b[2m  {label:>11}:\x1b[0m {value}");
     } else {
@@ -70,7 +70,7 @@ pub(crate) fn print_info_startup_details(
     print_startup_detail("objects", yes_no(objects), color);
 }
 
-fn format_pg_connection(config: &PgConfig) -> String {
+pub(crate) fn format_pg_connection(config: &PgConfig) -> String {
     let ports = config.get_ports();
     let hosts = config.get_hosts();
 

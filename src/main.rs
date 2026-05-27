@@ -13,6 +13,7 @@ mod info;
 mod manifest;
 mod parallel_workers;
 mod pg;
+mod pgpass;
 mod progress;
 mod select_dsl;
 mod sql;

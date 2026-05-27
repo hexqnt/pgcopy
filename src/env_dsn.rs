@@ -16,49 +16,67 @@ pub struct ConnectionOverrides {
 }
 
 /// Строит конфигурацию подключения к `PostgreSQL`.
-pub fn config(overrides: &ConnectionOverrides) -> Result<Config> {
-    build_default(overrides)
-}
-
-fn build_default(overrides: &ConnectionOverrides) -> Result<Config> {
+///
+/// Приоритет для каждого параметра: CLI → переменная окружения → дефолт.
+/// Для пароля дополнительно проверяется `~/.pgpass` (низший приоритет).
+pub(crate) fn build(overrides: &ConnectionOverrides) -> Result<Config> {
     let host = resolve_string(overrides.host.as_deref(), "PGHOST")?;
     let port = resolve_port(overrides.port)?;
     let dbname = resolve_string(overrides.dbname.as_deref(), "PGDATABASE")?;
     let user = resolve_string(overrides.user.as_deref(), "PGUSER")?;
     let password = resolve_string(overrides.password.as_deref(), "PGPASSWORD")?;
 
-    let mut missing_required = Vec::new();
-    if host.is_none() {
-        missing_required.push("--host/PGHOST");
-    }
-    if dbname.is_none() {
-        missing_required.push("--dbname/PGDATABASE");
-    }
-    if user.is_none() {
-        missing_required.push("--username/PGUSER");
-    }
+    // Если PGDATABASE/PGUSER не заданы — используем имя пользователя ОС (поведение libpq).
+    // Если и его не удалось определить — fallback на "postgres".
+    let os_user = os_user_name();
+    let dbname = dbname
+        .or_else(|| os_user.clone())
+        .or_else(|| Some(String::from("postgres")));
+    let user = user.or(os_user).or_else(|| Some(String::from("postgres")));
 
-    if !missing_required.is_empty() {
-        bail!(
-            "missing PostgreSQL connection parameters: {} (set corresponding CLI flags or env variables)",
-            missing_required.join(", ")
-        );
-    }
-
-    let (Some(host), Some(dbname), Some(user)) = (host, dbname, user) else {
-        unreachable!("required connection parameters must be resolved after missing check");
-    };
+    // Если пароль не задан ни через CLI, ни через PGPASSWORD — пробуем .pgpass.
+    let password = password.or_else(|| {
+        crate::pgpass::lookup(host.as_deref(), port, dbname.as_deref(), user.as_deref())
+    });
 
     let mut config = Config::new();
-    config.host(&host);
     config.port(port.get());
-    config.dbname(&dbname);
-    config.user(&user);
+
+    // PGHOST не задаём при отсутствии: tokio-postgres использует Unix-сокет (как libpq).
+    if let Some(host) = host.as_deref() {
+        config.host(host);
+    }
+    if let Some(dbname) = dbname.as_deref() {
+        config.dbname(dbname);
+    }
+    if let Some(user) = user.as_deref() {
+        config.user(user);
+    }
     if let Some(password) = password.as_deref() {
         config.password(password);
     }
 
     Ok(config)
+}
+
+/// Возвращает имя текущего пользователя ОС.
+///
+/// На Unix: читает `$USER`; на Windows: `$USERNAME`, затем `$USER`.
+/// Если переменная не установлена или пуста — возвращает `None`
+/// (fallback на `"postgres"` происходит выше, в `build`).
+fn os_user_name() -> Option<String> {
+    #[cfg(unix)]
+    {
+        std::env::var("USER").ok()
+    }
+    #[cfg(not(unix))]
+    {
+        std::env::var("USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .ok()
+    }
+    .map(|s| s.trim().to_owned())
+    .filter(|s| !s.is_empty())
 }
 
 fn resolve_string(cli_value: Option<&str>, env_name: &str) -> Result<Option<String>> {
@@ -90,7 +108,6 @@ fn resolve_port(cli_port: Option<NonZeroU16>) -> Result<NonZeroU16> {
 }
 
 fn default_port() -> NonZeroU16 {
-    // compile-time constant in practice; wrapped in fn to keep call sites explicit.
     NonZeroU16::new(5432).expect("default PostgreSQL port must be non-zero")
 }
 

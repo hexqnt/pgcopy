@@ -177,7 +177,7 @@ pub fn write_bundle(
             .finish()
             .context("failed to finalize encrypted bundle stream")?;
     } else {
-        let _ = write_bundle_archive(output_file, scratch_dir, &manifest_path, manifest)?;
+        write_bundle_archive(output_file, scratch_dir, &manifest_path, manifest)?;
     }
 
     Ok(())

@@ -125,7 +125,7 @@ pub async fn run(
     }
 }
 
-fn resolve_export_concurrency(
+pub(crate) fn resolve_export_concurrency(
     cli_concurrency: Option<NonZeroUsize>,
     general: &GeneralConfig,
 ) -> Result<NonZeroUsize> {

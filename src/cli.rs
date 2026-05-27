@@ -30,6 +30,12 @@ pub(crate) struct Cli {
         help = "Disable progress bars (useful for CI logs)"
     )]
     pub(crate) no_progress: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "Resolve configuration and print summary without connecting to PostgreSQL or writing files"
+    )]
+    pub(crate) dry_run: bool,
     #[command(subcommand)]
     pub(crate) command: Commands,
 }
