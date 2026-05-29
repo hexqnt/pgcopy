@@ -1,8 +1,9 @@
-use std::{num::NonZeroUsize, path::Path};
+use std::{num::NonZeroU16, num::NonZeroUsize, path::Path};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use crate::env_dsn::ConnectionOverrides;
 use crate::select_dsl::{ProjectionKind, SelectDsl};
 use crate::sql::{Identifier, quote_ident};
 use crate::types::{DataFormat, ExportAs};
@@ -14,6 +15,8 @@ pub struct Config {
     pub general: GeneralConfig,
     /// Список объектов для экспорта в порядке из конфигурации.
     pub objects: Vec<ObjectConfig>,
+    /// Параметры подключения из секции `[connection]` (если задана).
+    pub connection: Option<ConnectionOverrides>,
 }
 
 /// Общие настройки экспорта.
@@ -80,12 +83,99 @@ impl ObjectConfig {
     }
 }
 
+/// Значение порта в TOML: может быть целым числом или строкой с `{VAR_NAME}`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum PortValue {
+    Integer(u16),
+    String(String),
+}
+
+#[derive(Debug, Deserialize)]
+struct RawConnection {
+    host: Option<String>,
+    #[serde(default)]
+    port: Option<PortValue>,
+    dbname: Option<String>,
+    user: Option<String>,
+    password: Option<String>,
+}
+
+impl RawConnection {
+    /// Разрешает `{VAR_NAME}` в значениях и возвращает нормализованные переопределения.
+    fn resolve(&self) -> Result<Option<ConnectionOverrides>> {
+        let host = self
+            .host
+            .as_deref()
+            .map(interpolate_env)
+            .transpose()?
+            .flatten();
+
+        let port = match &self.port {
+            Some(PortValue::Integer(p)) => Some(
+                NonZeroU16::new(*p)
+                    .ok_or_else(|| anyhow::anyhow!("connection.port must be non-zero"))?,
+            ),
+            Some(PortValue::String(s)) => interpolate_env(s)?
+                .map(|s| {
+                    let p: u16 = s
+                        .parse()
+                        .with_context(|| format!("connection.port: '{s}' is not a valid port"))?;
+                    NonZeroU16::new(p)
+                        .ok_or_else(|| anyhow::anyhow!("connection.port must be non-zero"))
+                })
+                .transpose()?,
+            None => None,
+        };
+
+        let dbname = self
+            .dbname
+            .as_deref()
+            .map(interpolate_env)
+            .transpose()?
+            .flatten();
+
+        let user = self
+            .user
+            .as_deref()
+            .map(interpolate_env)
+            .transpose()?
+            .flatten();
+
+        let password = self
+            .password
+            .as_deref()
+            .map(interpolate_env)
+            .transpose()?
+            .flatten();
+
+        if host.is_none()
+            && port.is_none()
+            && dbname.is_none()
+            && user.is_none()
+            && password.is_none()
+        {
+            return Ok(None);
+        }
+
+        Ok(Some(ConnectionOverrides {
+            host,
+            port,
+            dbname,
+            user,
+            password,
+        }))
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct RawConfig {
     #[serde(default)]
     general: RawGeneral,
     #[serde(default)]
     objects: Vec<RawObject>,
+    #[serde(default)]
+    connection: Option<RawConnection>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,6 +211,41 @@ struct RawObject {
 
 fn default_true() -> bool {
     true
+}
+
+/// Интерполирует `{VAR_NAME}` в строке значениями переменных окружения.
+///
+/// Если переменная не установлена — подставляется пустая строка.
+/// Если после интерполяции результат пуст — возвращается `None`.
+fn interpolate_env(value: &str) -> Result<Option<String>> {
+    let mut result = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '{' {
+            let mut var_name = String::new();
+            loop {
+                match chars.next() {
+                    Some('}') => break,
+                    Some(c) => var_name.push(c),
+                    None => {
+                        bail!("unclosed '{{' in connection config value '{value}'");
+                    }
+                }
+            }
+            let var_value = std::env::var(&var_name).unwrap_or_default();
+            result.push_str(&var_value);
+        } else {
+            result.push(ch);
+        }
+    }
+
+    let trimmed = result.trim().to_owned();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed))
+    }
 }
 
 fn default_data_format() -> DataFormat {
@@ -182,6 +307,13 @@ pub fn load(path: &Path) -> Result<Config> {
         .concurrency
         .unwrap_or_else(default_concurrency);
 
+    let connection = parsed
+        .connection
+        .as_ref()
+        .map(RawConnection::resolve)
+        .transpose()?
+        .flatten();
+
     Ok(Config {
         general: GeneralConfig {
             data_format: parsed.general.data_format,
@@ -190,6 +322,7 @@ pub fn load(path: &Path) -> Result<Config> {
             concurrency_from_toml,
         },
         objects,
+        connection,
     })
 }
 
@@ -289,5 +422,234 @@ mod tests {
                 .to_string()
                 .contains("export_as='view' does not allow WHERE/ORDER BY/LIMIT")
         );
+    }
+
+    #[test]
+    fn connection_section_absent_is_none() {
+        let file = write_temp_config(
+            r#"
+            [general]
+            compression = "zstd"
+
+            [[objects]]
+            select = "select * from public.orders"
+            "#,
+        );
+        let config = load(file.path()).expect("config should parse");
+        assert!(config.connection.is_none());
+    }
+
+    #[test]
+    fn connection_section_empty_is_none() {
+        let file = write_temp_config(
+            r#"
+            [general]
+            compression = "zstd"
+
+            [connection]
+
+            [[objects]]
+            select = "select * from public.orders"
+            "#,
+        );
+        let config = load(file.path()).expect("config should parse");
+        assert!(config.connection.is_none());
+    }
+
+    #[test]
+    fn connection_explicit_values() {
+        let file = write_temp_config(
+            r#"
+            [general]
+            compression = "zstd"
+
+            [connection]
+            host = "db.example.com"
+            port = 5433
+            dbname = "mydb"
+            user = "myuser"
+            password = "secret"
+
+            [[objects]]
+            select = "select * from public.orders"
+            "#,
+        );
+        let config = load(file.path()).expect("config should parse");
+        let conn = config
+            .connection
+            .expect("connection section must be present");
+        assert_eq!(conn.host.as_deref(), Some("db.example.com"));
+        assert_eq!(conn.port.map(|p| p.get()), Some(5433));
+        assert_eq!(conn.dbname.as_deref(), Some("mydb"));
+        assert_eq!(conn.user.as_deref(), Some("myuser"));
+        assert_eq!(conn.password.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn connection_partial_fields() {
+        let file = write_temp_config(
+            r#"
+            [general]
+            compression = "zstd"
+
+            [connection]
+            host = "db.example.com"
+            dbname = "mydb"
+
+            [[objects]]
+            select = "select * from public.orders"
+            "#,
+        );
+        let config = load(file.path()).expect("config should parse");
+        let conn = config
+            .connection
+            .expect("connection section must be present");
+        assert_eq!(conn.host.as_deref(), Some("db.example.com"));
+        assert_eq!(conn.dbname.as_deref(), Some("mydb"));
+        assert!(conn.port.is_none());
+        assert!(conn.user.is_none());
+        assert!(conn.password.is_none());
+    }
+
+    #[test]
+    fn connection_port_as_string_with_env_var() {
+        unsafe { std::env::set_var("PGCOPY_TEST_PORT", "9876") };
+        let file = write_temp_config(
+            r#"
+            [general]
+            compression = "zstd"
+
+            [connection]
+            port = "{PGCOPY_TEST_PORT}"
+
+            [[objects]]
+            select = "select * from public.orders"
+            "#,
+        );
+        let config = load(file.path()).expect("config should parse");
+        let conn = config
+            .connection
+            .expect("connection section must be present");
+        assert_eq!(conn.port.map(|p| p.get()), Some(9876));
+        unsafe { std::env::remove_var("PGCOPY_TEST_PORT") };
+    }
+
+    #[test]
+    fn connection_port_zero_rejected() {
+        let file = write_temp_config(
+            r#"
+            [general]
+            compression = "zstd"
+
+            [connection]
+            port = 0
+
+            [[objects]]
+            select = "select * from public.orders"
+            "#,
+        );
+        let error = load(file.path()).expect_err("zero port must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("connection.port must be non-zero")
+        );
+    }
+
+    #[test]
+    fn connection_env_var_in_value() {
+        unsafe { std::env::set_var("PGCOPY_TEST_HOST", "myhost.example.com") };
+        let file = write_temp_config(
+            r#"
+            [general]
+            compression = "zstd"
+
+            [connection]
+            host = "{PGCOPY_TEST_HOST}"
+            dbname = "app_{PGCOPY_TEST_HOST}"
+
+            [[objects]]
+            select = "select * from public.orders"
+            "#,
+        );
+        let config = load(file.path()).expect("config should parse");
+        let conn = config
+            .connection
+            .expect("connection section must be present");
+        assert_eq!(conn.host.as_deref(), Some("myhost.example.com"));
+        assert_eq!(conn.dbname.as_deref(), Some("app_myhost.example.com"));
+        unsafe { std::env::remove_var("PGCOPY_TEST_HOST") };
+    }
+
+    #[test]
+    fn connection_env_var_not_set_yields_none() {
+        // Убедимся, что переменная не установлена.
+        unsafe { std::env::remove_var("PGCOPY_TEST_NOT_SET") };
+        let file = write_temp_config(
+            r#"
+            [general]
+            compression = "zstd"
+
+            [connection]
+            host = "{PGCOPY_TEST_NOT_SET}"
+            dbname = "mydb"
+
+            [[objects]]
+            select = "select * from public.orders"
+            "#,
+        );
+        let config = load(file.path()).expect("config should parse");
+        let conn = config
+            .connection
+            .expect("connection section must be present");
+        assert!(conn.host.is_none(), "host should be none for unset env var");
+        assert_eq!(conn.dbname.as_deref(), Some("mydb"));
+    }
+
+    #[test]
+    fn connection_env_var_port_from_string() {
+        unsafe { std::env::set_var("PGCOPY_TEST_PORT_STR", "6543") };
+        let file = write_temp_config(
+            r#"
+            [general]
+            compression = "zstd"
+
+            [connection]
+            port = "{PGCOPY_TEST_PORT_STR}"
+
+            [[objects]]
+            select = "select * from public.orders"
+            "#,
+        );
+        let config = load(file.path()).expect("config should parse");
+        let conn = config
+            .connection
+            .expect("connection section must be present");
+        assert_eq!(conn.port.map(|p| p.get()), Some(6543));
+        unsafe { std::env::remove_var("PGCOPY_TEST_PORT_STR") };
+    }
+
+    #[test]
+    fn connection_env_var_port_not_set_yields_none() {
+        unsafe { std::env::remove_var("PGCOPY_TEST_PORT_MISSING") };
+        let file = write_temp_config(
+            r#"
+            [general]
+            compression = "zstd"
+
+            [connection]
+            port = "{PGCOPY_TEST_PORT_MISSING}"
+            dbname = "mydb"
+
+            [[objects]]
+            select = "select * from public.orders"
+            "#,
+        );
+        let config = load(file.path()).expect("config should parse");
+        let conn = config
+            .connection
+            .expect("connection section must be present");
+        assert!(conn.port.is_none(), "port should be none for unset env var");
+        assert_eq!(conn.dbname.as_deref(), Some("mydb"));
     }
 }

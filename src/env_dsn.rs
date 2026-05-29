@@ -3,9 +3,10 @@ use std::env;
 use std::num::NonZeroU16;
 use tokio_postgres::Config;
 
-/// CLI-переопределения параметров подключения к `PostgreSQL`.
+/// Переопределения параметров подключения к `PostgreSQL` (из CLI или TOML-конфига).
 ///
-/// Приоритет источников для каждого поля: CLI -> переменная окружения -> дефолт (если есть).
+/// Приоритет: CLI → TOML-конфиг (`[connection]`) → переменная окружения → дефолт.
+/// Для пароля: CLI → TOML-конфиг → `.pgpass` → `PGPASSWORD`.
 #[derive(Debug, Clone, Default)]
 pub struct ConnectionOverrides {
     pub host: Option<String>,
@@ -17,14 +18,35 @@ pub struct ConnectionOverrides {
 
 /// Строит конфигурацию подключения к `PostgreSQL`.
 ///
-/// Приоритет для каждого параметра: CLI → переменная окружения → дефолт.
-/// Для пароля дополнительно проверяется `~/.pgpass` (низший приоритет).
-pub(crate) fn build(overrides: &ConnectionOverrides) -> Result<Config> {
-    let host = resolve_string(overrides.host.as_deref(), "PGHOST")?;
-    let port = resolve_port(overrides.port)?;
-    let dbname = resolve_string(overrides.dbname.as_deref(), "PGDATABASE")?;
-    let user = resolve_string(overrides.user.as_deref(), "PGUSER")?;
-    let password = resolve_string(overrides.password.as_deref(), "PGPASSWORD")?;
+/// Приоритет для каждого параметра: CLI → TOML-конфиг → переменная окружения → дефолт.
+/// Для пароля: CLI → TOML-конфиг → `~/.pgpass` → `PGPASSWORD`.
+///
+/// `toml_connection` — опциональные переопределения из секции `[connection]` TOML-файла.
+pub(crate) fn build(
+    cli_overrides: &ConnectionOverrides,
+    toml_connection: Option<&ConnectionOverrides>,
+) -> Result<Config> {
+    let host = resolve_string_3(
+        cli_overrides.host.as_deref(),
+        toml_connection.and_then(|t| t.host.as_deref()),
+        "PGHOST",
+    )?;
+    let port = resolve_port_3(cli_overrides.port, toml_connection.and_then(|t| t.port))?;
+    let dbname = resolve_string_3(
+        cli_overrides.dbname.as_deref(),
+        toml_connection.and_then(|t| t.dbname.as_deref()),
+        "PGDATABASE",
+    )?;
+    let user = resolve_string_3(
+        cli_overrides.user.as_deref(),
+        toml_connection.and_then(|t| t.user.as_deref()),
+        "PGUSER",
+    )?;
+    let password_candidate = resolve_string_3(
+        cli_overrides.password.as_deref(),
+        toml_connection.and_then(|t| t.password.as_deref()),
+        "PGPASSWORD",
+    )?;
 
     // Если PGDATABASE/PGUSER не заданы — используем имя пользователя ОС (поведение libpq).
     // Если и его не удалось определить — fallback на "postgres".
@@ -34,10 +56,17 @@ pub(crate) fn build(overrides: &ConnectionOverrides) -> Result<Config> {
         .or_else(|| Some(String::from("postgres")));
     let user = user.or(os_user).or_else(|| Some(String::from("postgres")));
 
-    // Если пароль не задан ни через CLI, ни через PGPASSWORD — пробуем .pgpass.
-    let password = password.or_else(|| {
-        crate::pgpass::lookup(host.as_deref(), port, dbname.as_deref(), user.as_deref())
-    });
+    // Пароль: CLI → TOML → .pgpass → PGPASSWORD.
+    // Если CLI или TOML явно задали пароль — используем его, не лезем в .pgpass.
+    let password = if cli_overrides.password.is_some()
+        || toml_connection.is_some_and(|t| t.password.is_some())
+    {
+        password_candidate
+    } else {
+        password_candidate.or_else(|| {
+            crate::pgpass::lookup(host.as_deref(), port, dbname.as_deref(), user.as_deref())
+        })
+    };
 
     let mut config = Config::new();
     config.port(port.get());
@@ -79,16 +108,27 @@ fn os_user_name() -> Option<String> {
     .filter(|s| !s.is_empty())
 }
 
-fn resolve_string(cli_value: Option<&str>, env_name: &str) -> Result<Option<String>> {
-    if let Some(value) = normalize_non_empty(cli_value) {
+/// Разрешает строковый параметр: CLI → TOML → env-переменная.
+fn resolve_string_3(
+    cli: Option<&str>,
+    toml: Option<&str>,
+    env_name: &str,
+) -> Result<Option<String>> {
+    if let Some(value) = normalize_non_empty(cli) {
         return Ok(Some(value));
     }
-
+    if let Some(value) = normalize_non_empty(toml) {
+        return Ok(Some(value));
+    }
     Ok(normalize_non_empty(read_env(env_name)?.as_deref()))
 }
 
-fn resolve_port(cli_port: Option<NonZeroU16>) -> Result<NonZeroU16> {
-    if let Some(port) = cli_port {
+/// Разрешает порт: CLI → TOML → PGPORT → 5432.
+fn resolve_port_3(cli: Option<NonZeroU16>, toml: Option<NonZeroU16>) -> Result<NonZeroU16> {
+    if let Some(port) = cli {
+        return Ok(port);
+    }
+    if let Some(port) = toml {
         return Ok(port);
     }
 

@@ -49,7 +49,7 @@ pgcopy import --in bundle.tar.zst  --host localhost --dbname gas_dwh --username 
 ## Быстрый старт
 
 1. Составьте `config.toml` со списком объектов.
-2. Укажите параметры подключения к PostgreSQL через CLI или env (см. ниже).
+2. Укажите параметры подключения к PostgreSQL через CLI, TOML-конфиг или переменные окружения (см. ниже).
 3. На исходной БД выполните экспорт:
 
    ```bash
@@ -111,7 +111,17 @@ pgcopy info --in <path/to/bundle> [--format text|json] [--objects] [--password P
 
 ## Подключение к PostgreSQL
 
-Параметры подключения можно задавать через CLI-флаги:
+Параметры подключения можно задавать несколькими способами. Приоритет (от высшего к низшему):
+
+| Приоритет | host                   | port                   | dbname                 | user                   | password              |
+|-----------|------------------------|------------------------|------------------------|------------------------|-----------------------|
+| 1         | `--host`               | `--port`               | `--dbname`             | `--username`           | `--pgpassword`        |
+| 2         | `[connection]` в TOML  | `[connection]` в TOML  | `[connection]` в TOML  | `[connection]` в TOML  | `[connection]` в TOML |
+| 3         | –                      | –                      | –                      | –                      | `.pgpass`             |
+| 4         | `PGHOST`               | `PGPORT`               | `PGDATABASE`           | `PGUSER`               | `PGPASSWORD`          |
+| Дефолт    | Unix-сокет             | `5432`                 | OS-user / `postgres`   | OS-user / `postgres`   | (нет)                 |
+
+### Через CLI-флаги
 
 - `--host`
 - `--port`
@@ -119,7 +129,34 @@ pgcopy info --in <path/to/bundle> [--format text|json] [--objects] [--password P
 - `--username` (alias: `--user`)
 - `--pgpassword`
 
-Или через стандартные переменные окружения PostgreSQL:
+### Через секцию `[connection]` в TOML-конфиге
+
+В `config.toml` (только для команды `export`) можно указать параметры подключения в секции `[connection]`.
+Значения могут ссылаться на переменные окружения через `{VAR_NAME}`.
+Если переменная не установлена — параметр считается не заданным (как будто его нет в конфиге).
+
+```toml
+[connection]
+host = "{MY_PGHOST}"
+port = "{MY_PGPORT}"
+dbname = "myapp"
+user = "app_user"
+password = "{MY_PGPASSWORD}"
+```
+
+Или просто явные значения:
+
+```toml
+[connection]
+host = "db.example.com"
+port = 5433
+dbname = "analytics"
+user = "reader"
+```
+
+### Через переменные окружения
+
+Стандартные переменные окружения PostgreSQL:
 
 - `PGHOST` (по умолчанию Unix-сокет / `localhost`, если не задан)
 - `PGPORT` (по умолчанию `5432`, если не задан)
@@ -127,10 +164,10 @@ pgcopy info --in <path/to/bundle> [--format text|json] [--objects] [--password P
 - `PGUSER` (по умолчанию имя пользователя ОС, если не задан)
 - `PGPASSWORD` (опционально)
 
-Если пароль не задан через `--pgpassword` или `PGPASSWORD`, дополнительно используется стандартный `.pgpass`
+Если пароль не задан через `--pgpassword`, `[connection]` или `PGPASSWORD`, дополнительно используется стандартный `.pgpass`
 (`~/.pgpass` на Unix, `%APPDATA%\postgres\pgpass.conf` на Windows).
 
-Приоритет параметров подключения: `CLI > env > defaults`. Для пароля: `CLI > env > .pgpass`.
+### Примеры
 
 Пример через env:
 
@@ -153,6 +190,19 @@ pgcopy export \
   --dbname app_db \
   --username app_user \
   --pgpassword secret
+```
+
+Пример через TOML-конфиг с env-ссылками:
+
+```bash
+# config.toml содержит:
+# [connection]
+# host = "{MY_HOST}"
+# dbname = "{MY_DB}"
+
+export MY_HOST=db.internal
+export MY_DB=analytics
+pgcopy export --config ./config.toml --out ./bundle.tar.zst
 ```
 
 ## Шифрование bundle
@@ -219,6 +269,21 @@ export_as = "view"
 - `compression`: сейчас поддерживается только `zstd`.
 - `consistent_snapshot`: включает согласованное чтение в одном `REPEATABLE READ` snapshot (по умолчанию `true`).
 - `concurrency`: число параллельных workers экспорта (`>= 1`, по умолчанию `1`).
+
+### Подключение (`[connection]`) — опционально
+
+Позволяет задать или переопределить параметры подключения к БД в самом конфиге.
+Поддерживает ссылки на переменные окружения через `{VAR_NAME}`.
+Приоритет: CLI-флаги > `[connection]` > `.pgpass`/переменные окружения.
+
+```toml
+[connection]
+host = "{MY_PGHOST}"
+port = "{MY_PGPORT}"
+dbname = "myapp"
+user = "app_user"
+password = "{MY_PGPASSWORD}"
+```
 
 ### Объекты (`[[objects]]`)
 

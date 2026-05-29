@@ -16,18 +16,20 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
 
     match cli.command {
         Commands::Export {
-            config,
+            config: config_path,
             out,
             concurrency,
             password,
             connection,
         } => {
+            let cfg = config::load(&config_path)?;
             let dsn_overrides = connection.into_overrides();
-            let source_config = env_dsn::build(&dsn_overrides)?;
+            let source_config = env_dsn::build(&dsn_overrides, cfg.connection.as_ref())?;
 
             if cli.dry_run {
                 print_dry_run_export(
-                    &config,
+                    &cfg,
+                    &config_path,
                     &out,
                     concurrency,
                     password.as_deref(),
@@ -38,10 +40,15 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             }
 
             if !cli.quiet {
-                startup::print_export_startup_details(&config, &out, &source_config, startup_color);
+                startup::print_export_startup_details(
+                    &config_path,
+                    &out,
+                    &source_config,
+                    startup_color,
+                );
             }
             export::run(
-                &config,
+                &config_path,
                 &out,
                 concurrency,
                 password.as_deref(),
@@ -59,7 +66,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             connection,
         } => {
             let dsn_overrides = connection.into_overrides();
-            let target_config = env_dsn::build(&dsn_overrides)?;
+            let target_config = env_dsn::build(&dsn_overrides, None)?;
 
             if cli.dry_run {
                 print_dry_run_import(
@@ -128,6 +135,7 @@ fn init_tracing(quiet: bool) {
 }
 
 fn print_dry_run_export(
+    cfg: &config::Config,
     config_path: &Path,
     out_path: &Path,
     concurrency: Option<NonZeroUsize>,
@@ -135,7 +143,6 @@ fn print_dry_run_export(
     source_config: &tokio_postgres::Config,
     color: bool,
 ) -> Result<()> {
-    let cfg = config::load(config_path)?;
     let concurrency = export::resolve_export_concurrency(concurrency, &cfg.general)?;
     let bundle_password = crypto::resolve_bundle_password(bundle_password)?;
 
