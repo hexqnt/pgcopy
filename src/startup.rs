@@ -106,7 +106,7 @@ fn port_for_host(ports: &[u16], index: usize) -> u16 {
     match ports {
         [] => 5432,
         [port] => *port,
-        many => many.get(index).copied().unwrap_or(many[0]),
+        many @ [first, ..] => many.iter().copied().nth(index).unwrap_or(*first),
     }
 }
 

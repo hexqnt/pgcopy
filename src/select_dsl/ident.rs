@@ -18,23 +18,19 @@ pub(super) fn parse_parenthesized_identifier_list(raw: &str) -> Result<Vec<Strin
 }
 
 fn find_matching_paren(input: &str) -> Option<usize> {
-    let bytes = input.as_bytes();
     let mut depth = 0_usize;
-    let mut i = 0;
     let mut in_double_quote = false;
+    let mut bytes = input.bytes().enumerate().peekable();
 
-    while i < bytes.len() {
-        let ch = bytes[i];
-
+    while let Some((index, ch)) = bytes.next() {
         if in_double_quote {
             if ch == b'"' {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
-                    i += 2;
+                if bytes.peek().is_some_and(|(_, next)| *next == b'"') {
+                    bytes.next();
                     continue;
                 }
                 in_double_quote = false;
             }
-            i += 1;
             continue;
         }
 
@@ -51,13 +47,11 @@ fn find_matching_paren(input: &str) -> Option<usize> {
                 }
                 depth -= 1;
                 if depth == 0 {
-                    return Some(i);
+                    return Some(index);
                 }
             }
             _ => {}
         }
-
-        i += 1;
     }
 
     None

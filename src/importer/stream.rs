@@ -77,17 +77,10 @@ async fn import_objects_layout_v2<R: Read>(
     }
 
     let mut total_rows = 0_u64;
-    for (index, object) in manifest.objects.iter().enumerate() {
+    for ((index, object), ddl_sql) in manifest.objects.iter().enumerate().zip(&ddl_entries) {
         progress.set_object_running(object);
         let object_started_at = Instant::now();
         let import_result: Result<u64> = async {
-            let ddl_sql = ddl_entries.get(index).with_context(|| {
-                format!(
-                    "internal error: missing cached DDL for manifest object index {}",
-                    index + 1
-                )
-            })?;
-
             let imported_rows = if ddl_only {
                 load::prepare_object_ddl_only(client, object, mode, ddl_sql).await?;
                 0

@@ -59,24 +59,22 @@ pub(super) async fn validate_existing_table_compatibility(
         .map(|(name, type_sql)| (name.as_str(), type_sql.as_str()))
         .collect::<std::collections::HashMap<_, _>>();
 
-    for (index, column) in object.effective_columns.iter().enumerate() {
-        let actual_type = target_types_by_column.get(column.as_str()).with_context(|| {
+    let actual_type_for = |column: &str| {
+        target_types_by_column.get(column).with_context(|| {
             format!(
                 "append mode compatibility error: target table {}.{} does not contain required column '{}'",
                 object.target_schema, object.target_name, column
             )
-        })?;
+        })
+    };
 
-        if object.effective_column_types.len() == object.effective_columns.len() {
-            let expected_type = object
-                .effective_column_types
-                .get(index)
-                .with_context(|| {
-                    format!(
-                        "append mode compatibility error: expected type metadata is incomplete for {}.{} column '{}'",
-                        object.target_schema, object.target_name, column
-                    )
-                })?;
+    if object.effective_column_types.len() == object.effective_columns.len() {
+        for (column, expected_type) in object
+            .effective_columns
+            .iter()
+            .zip(&object.effective_column_types)
+        {
+            let actual_type = actual_type_for(column.as_str())?;
             if actual_type != &expected_type.as_str() {
                 bail!(
                     "append mode compatibility error: column type mismatch for {}.{}.'{}': expected '{}', got '{}'",
@@ -87,6 +85,10 @@ pub(super) async fn validate_existing_table_compatibility(
                     actual_type
                 );
             }
+        }
+    } else {
+        for column in &object.effective_columns {
+            actual_type_for(column.as_str())?;
         }
     }
 

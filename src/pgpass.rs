@@ -51,16 +51,7 @@ struct PgPassEntry {
 
 impl PgPassEntry {
     fn parse(line: &str) -> Option<Self> {
-        let mut fields = parse_line(line);
-        if fields.len() != 5 {
-            return None;
-        }
-
-        let password = fields.pop()?;
-        let user = fields.pop()?;
-        let dbname = fields.pop()?;
-        let port = fields.pop()?;
-        let host = fields.pop()?;
+        let [host, port, dbname, user, password] = parse_line(line).try_into().ok()?;
 
         Some(Self {
             host,

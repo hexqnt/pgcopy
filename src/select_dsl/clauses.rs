@@ -1,3 +1,6 @@
+use std::iter::{Enumerate, Peekable};
+use std::str::Bytes;
+
 use anyhow::{Context, Result, bail};
 
 #[derive(Debug, Default)]
@@ -184,8 +187,7 @@ struct WordToken<'a> {
 
 struct TopLevelWordIter<'a> {
     input: &'a str,
-    bytes: &'a [u8],
-    index: usize,
+    bytes: Peekable<Enumerate<Bytes<'a>>>,
     paren_depth: usize,
     in_single_quote: bool,
     in_double_quote: bool,
@@ -195,8 +197,7 @@ impl<'a> TopLevelWordIter<'a> {
     fn new(input: &'a str) -> Self {
         Self {
             input,
-            bytes: input.as_bytes(),
-            index: 0,
+            bytes: input.bytes().enumerate().peekable(),
             paren_depth: 0,
             in_single_quote: false,
             in_double_quote: false,
@@ -208,70 +209,64 @@ impl<'a> Iterator for TopLevelWordIter<'a> {
     type Item = WordToken<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while self.index < self.bytes.len() {
-            let ch = self.bytes[self.index];
-
+        while let Some((index, ch)) = self.bytes.next() {
             if self.in_single_quote {
                 if ch == b'\'' {
-                    if self.index + 1 < self.bytes.len() && self.bytes[self.index + 1] == b'\'' {
-                        self.index += 2;
+                    if self.bytes.peek().is_some_and(|(_, next)| *next == b'\'') {
+                        self.bytes.next();
                         continue;
                     }
                     self.in_single_quote = false;
                 }
-                self.index += 1;
                 continue;
             }
 
             if self.in_double_quote {
                 if ch == b'"' {
-                    if self.index + 1 < self.bytes.len() && self.bytes[self.index + 1] == b'"' {
-                        self.index += 2;
+                    if self.bytes.peek().is_some_and(|(_, next)| *next == b'"') {
+                        self.bytes.next();
                         continue;
                     }
                     self.in_double_quote = false;
                 }
-                self.index += 1;
                 continue;
             }
 
             match ch {
                 b'\'' => {
                     self.in_single_quote = true;
-                    self.index += 1;
                     continue;
                 }
                 b'"' => {
                     self.in_double_quote = true;
-                    self.index += 1;
                     continue;
                 }
                 b'(' => {
                     self.paren_depth += 1;
-                    self.index += 1;
                     continue;
                 }
                 b')' => {
                     self.paren_depth = self.paren_depth.saturating_sub(1);
-                    self.index += 1;
                     continue;
                 }
                 _ => {}
             }
 
             if self.paren_depth == 0 && is_word_char(ch) {
-                let start = self.index;
-                self.index += 1;
-                while self.index < self.bytes.len() && is_word_char(self.bytes[self.index]) {
-                    self.index += 1;
+                let start = index;
+                let mut end = index + 1;
+                while let Some(&(next_index, next_ch)) = self.bytes.peek() {
+                    if !is_word_char(next_ch) {
+                        break;
+                    }
+                    end = next_index + 1;
+                    self.bytes.next();
                 }
                 return Some(WordToken {
-                    word: &self.input[start..self.index],
+                    word: &self.input[start..end],
                     start,
                 });
             }
-
-            self.index += 1;
         }
 
         None
