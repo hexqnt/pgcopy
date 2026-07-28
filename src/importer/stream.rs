@@ -4,9 +4,10 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 
-use super::{ImportMode, compat, copy_stream, load, progress::ImportProgress};
 use crate::bundle_io::BundleAccess;
 use crate::manifest::Manifest;
+
+use super::{ImportMode, compat, copy_stream, load, progress::ImportProgress};
 
 pub(super) struct ImportStreamOptions {
     pub(super) access: BundleAccess,
@@ -16,6 +17,14 @@ pub(super) struct ImportStreamOptions {
     pub(super) progress_enabled: bool,
 }
 
+fn read_ddl_entry<R: Read>(entries: &mut tar::Entries<'_, R>, ddl_path: &str) -> Result<String> {
+    let mut ddl_entry = crate::bundle_io::next_required_entry(entries, ddl_path)?;
+    let mut ddl_sql = String::new();
+    ddl_entry
+        .read_to_string(&mut ddl_sql)
+        .with_context(|| format!("failed to read DDL entry '{ddl_path}' from bundle"))?;
+    Ok(ddl_sql)
+}
 /// Импортирует bundle в потоковом режиме без предварительной распаковки.
 pub async fn import_objects_streaming(
     bundle_path: &Path,
@@ -149,11 +158,3 @@ async fn import_objects_layout_v2<R: Read>(
     Ok(total_rows)
 }
 
-fn read_ddl_entry<R: Read>(entries: &mut tar::Entries<'_, R>, ddl_path: &str) -> Result<String> {
-    let mut ddl_entry = crate::bundle_io::next_required_entry(entries, ddl_path)?;
-    let mut ddl_sql = String::new();
-    ddl_entry
-        .read_to_string(&mut ddl_sql)
-        .with_context(|| format!("failed to read DDL entry '{ddl_path}' from bundle"))?;
-    Ok(ddl_sql)
-}

@@ -1,4 +1,5 @@
 /target
+/out
 config.toml
 pg_init.sh
 run.sh

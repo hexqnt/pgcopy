@@ -42,6 +42,11 @@ codegen-units = 1
 opt-level = 3
 # rustflags = ["-Ctarget-cpu=x86-64-v3", "-Ctarget-feature=+avx2,+fma"]
 
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = "none"
+
 [workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"

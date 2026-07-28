@@ -8,6 +8,14 @@ use crate::select_dsl::{ProjectionKind, SelectDsl};
 use crate::sql::{Identifier, quote_ident};
 use crate::types::{DataFormat, ExportAs};
 
+/// Значение порта в TOML: может быть целым числом или строкой с `{VAR_NAME}`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum PortValue {
+    Integer(u16),
+    String(String),
+}
+
 /// Нормализованный конфиг экспорта после валидации TOML.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -81,14 +89,6 @@ impl ObjectConfig {
             export_as: ExportAs::Table,
         })
     }
-}
-
-/// Значение порта в TOML: может быть целым числом или строкой с `{VAR_NAME}`.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum PortValue {
-    Integer(u16),
-    String(String),
 }
 
 #[derive(Debug, Deserialize)]

@@ -3,12 +3,53 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use futures_util::{TryStreamExt, pin_mut};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWriteExt, BufWriter};
 
 use crate::config::ObjectConfig;
 use crate::manifest::ManifestObject;
 use crate::pg::{self, RelationKind};
 use crate::types::{DataFormat, ExportAs};
+
+// Укрупняет запись COPY OUT в файл и не создаёт blocking-задачу Tokio
+// для каждого небольшого чанка протокола PostgreSQL.
+const COPY_FILE_BUFFER_SIZE: usize = 1024 * 1024;
+
+/// Проверяет, что в manifest нет коллизий целевых имён.
+pub fn validate_target_collisions(objects: &[ManifestObject]) -> Result<()> {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    for object in objects {
+        let key = (object.target_schema.as_str(), object.target_name.as_str());
+        if !seen.insert(key) {
+            bail!(
+                "target name collision detected for {}.{}",
+                object.target_schema,
+                object.target_name
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn data_file_suffix(data_format: DataFormat) -> &'static str {
+    match data_format {
+        DataFormat::Binary => "copybin",
+        DataFormat::Csv => "copycsv",
+    }
+}
+
+fn resolve_target_names(object: &ObjectConfig) -> (String, String) {
+    if let Some(target) = object.target.as_ref() {
+        return (target.schema.to_string(), target.name.to_string());
+    }
+
+    (
+        object.select.source_schema.clone(),
+        object.select.source_name.clone(),
+    )
+}
 
 /// Экспортирует один объект в scratch-структуру и формирует запись manifest.
 pub async fn export_object(
@@ -66,21 +107,14 @@ pub async fn export_object(
                 .with_context(|| format!("failed to write DDL file {}", ddl_file.display()))?;
 
             let copy_out_sql = pg::copy_out_sql(&normalized_select, data_format);
-            let mut output = tokio::fs::File::create(&data_file)
-                .await
-                .with_context(|| format!("failed to create data file {}", data_file.display()))?;
-
-            let copy_stream = client.copy_out(&copy_out_sql).await.with_context(|| {
-                format!("failed to execute COPY OUT for {source_schema}.{source_name}")
-            })?;
-            pin_mut!(copy_stream);
-
-            while let Some(chunk) = copy_stream.as_mut().try_next().await? {
-                output.write_all(&chunk).await.with_context(|| {
-                    format!("failed to write data chunk to {}", data_file.display())
-                })?;
-            }
-            output.flush().await?;
+            write_copy_data(
+                client,
+                &copy_out_sql,
+                &data_file,
+                &source_schema,
+                &source_name,
+            )
+            .await?;
 
             let row_estimate = pg::row_estimate(client, &source_schema, &source_name).await?;
             (
@@ -167,41 +201,40 @@ pub async fn export_object(
     })
 }
 
-/// Проверяет, что в manifest нет коллизий целевых имён.
-pub fn validate_target_collisions(objects: &[ManifestObject]) -> Result<()> {
-    use std::collections::HashSet;
+async fn write_copy_data(
+    client: &tokio_postgres::Client,
+    copy_out_sql: &str,
+    data_file: &Path,
+    source_schema: &str,
+    source_name: &str,
+) -> Result<()> {
+    let output = tokio::fs::File::create(data_file)
+        .await
+        .with_context(|| format!("failed to create data file {}", data_file.display()))?;
+    let mut output = BufWriter::with_capacity(COPY_FILE_BUFFER_SIZE, output);
 
-    let mut seen = HashSet::new();
-    for object in objects {
-        let key = (object.target_schema.as_str(), object.target_name.as_str());
-        if !seen.insert(key) {
-            bail!(
-                "target name collision detected for {}.{}",
-                object.target_schema,
-                object.target_name
-            );
-        }
+    let copy_stream = client
+        .copy_out(copy_out_sql)
+        .await
+        .with_context(|| format!("failed to execute COPY OUT for {source_schema}.{source_name}"))?;
+    pin_mut!(copy_stream);
+
+    while let Some(chunk) = copy_stream
+        .as_mut()
+        .try_next()
+        .await
+        .with_context(|| format!("failed to read COPY OUT for {source_schema}.{source_name}"))?
+    {
+        output
+            .write_all(&chunk)
+            .await
+            .with_context(|| format!("failed to write data file {}", data_file.display()))?;
     }
 
-    Ok(())
-}
-
-fn data_file_suffix(data_format: DataFormat) -> &'static str {
-    match data_format {
-        DataFormat::Binary => "copybin",
-        DataFormat::Csv => "copycsv",
-    }
-}
-
-fn resolve_target_names(object: &ObjectConfig) -> (String, String) {
-    if let Some(target) = object.target.as_ref() {
-        return (target.schema.to_string(), target.name.to_string());
-    }
-
-    (
-        object.select.source_schema.clone(),
-        object.select.source_name.clone(),
-    )
+    output
+        .flush()
+        .await
+        .with_context(|| format!("failed to flush data file {}", data_file.display()))
 }
 
 #[cfg(test)]

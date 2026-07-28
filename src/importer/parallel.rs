@@ -9,15 +9,15 @@ use crate::types::DataFormat;
 
 use super::{ImportMode, copy_stream, load, progress::ImportProgress};
 
+/// Результат worker-а импорта:
+/// completed содержит количество загруженных строк по объектам и время обработки.
+type ImportWorkerOutcome = WorkerOutcome<ManifestObject, ImportObjectResult>;
+
 /// Результат импорта одного объекта внутри worker-а.
 struct ImportObjectResult {
     inserted_rows: u64,
     elapsed: Duration,
 }
-
-/// Результат worker-а импорта:
-/// completed содержит количество загруженных строк по объектам и время обработки.
-type ImportWorkerOutcome = WorkerOutcome<ManifestObject, ImportObjectResult>;
 
 pub(super) struct ImportParallelOptions {
     pub(super) mode: ImportMode,

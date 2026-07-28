@@ -3,6 +3,12 @@ use std::str::Bytes;
 
 use anyhow::{Context, Result, bail};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TailClause {
+    OrderBy,
+    Limit,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct ParsedClauses {
     pub(super) where_clause: Option<String>,
@@ -10,12 +16,99 @@ pub(super) struct ParsedClauses {
     pub(super) limit_clause: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TailClause {
-    OrderBy,
-    Limit,
+#[derive(Clone, Copy)]
+struct WordToken<'a> {
+    word: &'a str,
+    start: usize,
 }
 
+struct TopLevelWordIter<'a> {
+    input: &'a str,
+    bytes: Peekable<Enumerate<Bytes<'a>>>,
+    paren_depth: usize,
+    in_single_quote: bool,
+    in_double_quote: bool,
+}
+
+impl<'a> TopLevelWordIter<'a> {
+    fn new(input: &'a str) -> Self {
+        Self {
+            input,
+            bytes: input.bytes().enumerate().peekable(),
+            paren_depth: 0,
+            in_single_quote: false,
+            in_double_quote: false,
+        }
+    }
+}
+
+impl<'a> Iterator for TopLevelWordIter<'a> {
+    type Item = WordToken<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some((index, ch)) = self.bytes.next() {
+            if self.in_single_quote {
+                if ch == b'\'' {
+                    if self.bytes.peek().is_some_and(|(_, next)| *next == b'\'') {
+                        self.bytes.next();
+                        continue;
+                    }
+                    self.in_single_quote = false;
+                }
+                continue;
+            }
+
+            if self.in_double_quote {
+                if ch == b'"' {
+                    if self.bytes.peek().is_some_and(|(_, next)| *next == b'"') {
+                        self.bytes.next();
+                        continue;
+                    }
+                    self.in_double_quote = false;
+                }
+                continue;
+            }
+
+            match ch {
+                b'\'' => {
+                    self.in_single_quote = true;
+                    continue;
+                }
+                b'"' => {
+                    self.in_double_quote = true;
+                    continue;
+                }
+                b'(' => {
+                    self.paren_depth += 1;
+                    continue;
+                }
+                b')' => {
+                    self.paren_depth = self.paren_depth.saturating_sub(1);
+                    continue;
+                }
+                _ => {}
+            }
+
+            if self.paren_depth == 0 && is_word_char(ch) {
+                let start = index;
+                let mut end = index + 1;
+                while let Some(&(next_index, next_ch)) = self.bytes.peek() {
+                    if !is_word_char(next_ch) {
+                        break;
+                    }
+                    end = next_index + 1;
+                    self.bytes.next();
+                }
+                return Some(WordToken {
+                    word: &self.input[start..end],
+                    start,
+                });
+            }
+        }
+
+        None
+    }
+}
 /// Снимает ведущий keyword без учёта регистра.
 pub(super) fn strip_leading_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
     let trimmed = input.trim_start();
@@ -179,96 +272,3 @@ const fn is_word_char(ch: u8) -> bool {
     ch.is_ascii_alphanumeric() || ch == b'_'
 }
 
-#[derive(Clone, Copy)]
-struct WordToken<'a> {
-    word: &'a str,
-    start: usize,
-}
-
-struct TopLevelWordIter<'a> {
-    input: &'a str,
-    bytes: Peekable<Enumerate<Bytes<'a>>>,
-    paren_depth: usize,
-    in_single_quote: bool,
-    in_double_quote: bool,
-}
-
-impl<'a> TopLevelWordIter<'a> {
-    fn new(input: &'a str) -> Self {
-        Self {
-            input,
-            bytes: input.bytes().enumerate().peekable(),
-            paren_depth: 0,
-            in_single_quote: false,
-            in_double_quote: false,
-        }
-    }
-}
-
-impl<'a> Iterator for TopLevelWordIter<'a> {
-    type Item = WordToken<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while let Some((index, ch)) = self.bytes.next() {
-            if self.in_single_quote {
-                if ch == b'\'' {
-                    if self.bytes.peek().is_some_and(|(_, next)| *next == b'\'') {
-                        self.bytes.next();
-                        continue;
-                    }
-                    self.in_single_quote = false;
-                }
-                continue;
-            }
-
-            if self.in_double_quote {
-                if ch == b'"' {
-                    if self.bytes.peek().is_some_and(|(_, next)| *next == b'"') {
-                        self.bytes.next();
-                        continue;
-                    }
-                    self.in_double_quote = false;
-                }
-                continue;
-            }
-
-            match ch {
-                b'\'' => {
-                    self.in_single_quote = true;
-                    continue;
-                }
-                b'"' => {
-                    self.in_double_quote = true;
-                    continue;
-                }
-                b'(' => {
-                    self.paren_depth += 1;
-                    continue;
-                }
-                b')' => {
-                    self.paren_depth = self.paren_depth.saturating_sub(1);
-                    continue;
-                }
-                _ => {}
-            }
-
-            if self.paren_depth == 0 && is_word_char(ch) {
-                let start = index;
-                let mut end = index + 1;
-                while let Some(&(next_index, next_ch)) = self.bytes.peek() {
-                    if !is_word_char(next_ch) {
-                        break;
-                    }
-                    end = next_index + 1;
-                    self.bytes.next();
-                }
-                return Some(WordToken {
-                    word: &self.input[start..end],
-                    start,
-                });
-            }
-        }
-
-        None
-    }
-}

@@ -1,10 +1,11 @@
-use anyhow::{Context, Result, bail};
-use chrono::Utc;
 use std::collections::HashMap;
 use std::env;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::time::Instant;
+
+use anyhow::{Context, Result, bail};
+use chrono::Utc;
 use tempfile::TempDir;
 
 use crate::bundle_io;
@@ -16,14 +17,112 @@ use crate::pg::{self, RelationKind};
 use crate::select_dsl::ProjectionKind;
 use crate::types::{DataFormat, ExportAs};
 
-mod object;
-mod progress;
-mod session;
-mod worker;
 use object::{export_object, validate_target_collisions};
 use progress::ExportProgress;
 use session::run_with_snapshot_support;
 use worker::export_worker;
+
+mod object;
+mod progress;
+mod session;
+mod worker;
+type SourceKey = (String, String);
+
+#[derive(Debug)]
+struct SeenSource {
+    config_index: Option<usize>,
+    is_auto_dependency: bool,
+    required_by_view_index: Option<usize>,
+    dependency_compatible: bool,
+    incompatibility_reason: Option<String>,
+}
+
+impl SeenSource {
+    fn auto_dependency(required_by_view_index: usize) -> Self {
+        Self {
+            config_index: None,
+            is_auto_dependency: true,
+            required_by_view_index: Some(required_by_view_index),
+            dependency_compatible: true,
+            incompatibility_reason: None,
+        }
+    }
+
+    fn from_config(config_index: usize, compatibility_issues: &[&'static str]) -> Self {
+        let incompatibility_reason =
+            (!compatibility_issues.is_empty()).then(|| compatibility_issues.join(", "));
+        Self {
+            config_index: Some(config_index),
+            is_auto_dependency: false,
+            required_by_view_index: None,
+            dependency_compatible: incompatibility_reason.is_none(),
+            incompatibility_reason,
+        }
+    }
+
+    fn origin_ref(&self) -> String {
+        if let Some(config_index) = self.config_index {
+            return format!("objects[{config_index}]");
+        }
+        if let Some(view_index) = self.required_by_view_index {
+            return format!("auto-added dependency for objects[{view_index}]");
+        }
+        "auto-added dependency".to_owned()
+    }
+}
+
+pub(crate) fn resolve_export_concurrency(
+    cli_concurrency: Option<NonZeroUsize>,
+    general: &GeneralConfig,
+) -> Result<NonZeroUsize> {
+    if let Some(concurrency) = cli_concurrency {
+        return Ok(concurrency);
+    }
+
+    if general.concurrency_from_toml {
+        return Ok(general.concurrency);
+    }
+
+    // Приоритет параметров: CLI > TOML > ENV > fallback.
+    let env_name = "PGCOPY_CONCURRENCY";
+    match env::var(env_name) {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Ok(general.concurrency);
+            }
+
+            let parsed = trimmed.parse::<NonZeroUsize>().map_err(|_| {
+                anyhow::anyhow!("invalid {env_name} value '{trimmed}', expected integer >= 1")
+            })?;
+            Ok(parsed)
+        }
+        Err(env::VarError::NotPresent) => Ok(general.concurrency),
+        Err(env::VarError::NotUnicode(_)) => {
+            bail!("environment variable {env_name} contains non-Unicode data")
+        }
+    }
+}
+
+fn dependency_compatibility_issues(object: &ObjectConfig) -> Vec<&'static str> {
+    let mut issues = Vec::new();
+    if object.export_as != ExportAs::Table {
+        issues.push("export_as must be 'table'");
+    }
+    if object.target.is_some() {
+        issues.push("target_schema/target_name override is not allowed");
+    }
+    if object.select.projection_kind() != ProjectionKind::All {
+        issues.push("select projection must be '*'");
+    }
+    if object.select.where_clause.is_some()
+        || object.select.order_by_clause.is_some()
+        || object.select.limit_clause.is_some()
+    {
+        issues.push("WHERE/ORDER BY/LIMIT are not allowed");
+    }
+    issues
+}
 
 /// Выполняет экспорт объектов в bundle.
 pub async fn run(
@@ -121,39 +220,6 @@ pub async fn run(
         Err(error) => {
             progress.finish_bundle_error(out_path, error.as_ref());
             Err(error)
-        }
-    }
-}
-
-pub(crate) fn resolve_export_concurrency(
-    cli_concurrency: Option<NonZeroUsize>,
-    general: &GeneralConfig,
-) -> Result<NonZeroUsize> {
-    if let Some(concurrency) = cli_concurrency {
-        return Ok(concurrency);
-    }
-
-    if general.concurrency_from_toml {
-        return Ok(general.concurrency);
-    }
-
-    // Приоритет параметров: CLI > TOML > ENV > fallback.
-    let env_name = "PGCOPY_CONCURRENCY";
-    match env::var(env_name) {
-        Ok(raw) => {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                return Ok(general.concurrency);
-            }
-
-            let parsed = trimmed.parse::<NonZeroUsize>().map_err(|_| {
-                anyhow::anyhow!("invalid {env_name} value '{trimmed}', expected integer >= 1")
-            })?;
-            Ok(parsed)
-        }
-        Err(env::VarError::NotPresent) => Ok(general.concurrency),
-        Err(env::VarError::NotUnicode(_)) => {
-            bail!("environment variable {env_name} contains non-Unicode data")
         }
     }
 }
@@ -377,71 +443,6 @@ async fn validate_view_source_kind(
     }
     Ok(())
 }
-
-#[derive(Debug)]
-struct SeenSource {
-    config_index: Option<usize>,
-    is_auto_dependency: bool,
-    required_by_view_index: Option<usize>,
-    dependency_compatible: bool,
-    incompatibility_reason: Option<String>,
-}
-
-impl SeenSource {
-    fn auto_dependency(required_by_view_index: usize) -> Self {
-        Self {
-            config_index: None,
-            is_auto_dependency: true,
-            required_by_view_index: Some(required_by_view_index),
-            dependency_compatible: true,
-            incompatibility_reason: None,
-        }
-    }
-
-    fn from_config(config_index: usize, compatibility_issues: &[&'static str]) -> Self {
-        let incompatibility_reason =
-            (!compatibility_issues.is_empty()).then(|| compatibility_issues.join(", "));
-        Self {
-            config_index: Some(config_index),
-            is_auto_dependency: false,
-            required_by_view_index: None,
-            dependency_compatible: incompatibility_reason.is_none(),
-            incompatibility_reason,
-        }
-    }
-
-    fn origin_ref(&self) -> String {
-        if let Some(config_index) = self.config_index {
-            return format!("objects[{config_index}]");
-        }
-        if let Some(view_index) = self.required_by_view_index {
-            return format!("auto-added dependency for objects[{view_index}]");
-        }
-        "auto-added dependency".to_owned()
-    }
-}
-
-fn dependency_compatibility_issues(object: &ObjectConfig) -> Vec<&'static str> {
-    let mut issues = Vec::new();
-    if object.export_as != ExportAs::Table {
-        issues.push("export_as must be 'table'");
-    }
-    if object.target.is_some() {
-        issues.push("target_schema/target_name override is not allowed");
-    }
-    if object.select.projection_kind() != ProjectionKind::All {
-        issues.push("select projection must be '*'");
-    }
-    if object.select.where_clause.is_some()
-        || object.select.order_by_clause.is_some()
-        || object.select.limit_clause.is_some()
-    {
-        issues.push("WHERE/ORDER BY/LIMIT are not allowed");
-    }
-    issues
-}
-
-type SourceKey = (String, String);
 
 #[cfg(test)]
 mod tests {

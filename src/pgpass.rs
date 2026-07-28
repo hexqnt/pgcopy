@@ -6,6 +6,37 @@
 use std::num::NonZeroU16;
 use std::path::PathBuf;
 
+/// Одна разобранная запись `.pgpass`.
+#[derive(Debug, PartialEq, Eq)]
+struct PgPassEntry {
+    host: String,
+    port: String,
+    dbname: String,
+    user: String,
+    password: String,
+}
+
+impl PgPassEntry {
+    fn parse(line: &str) -> Option<Self> {
+        let [host, port, dbname, user, password] = parse_line(line).try_into().ok()?;
+
+        Some(Self {
+            host,
+            port,
+            dbname,
+            user,
+            password,
+        })
+    }
+
+    fn matches(&self, host: &str, port: &str, dbname: &str, user: &str) -> bool {
+        field_matches(&self.host, host)
+            && field_matches(&self.port, port)
+            && field_matches(&self.dbname, dbname)
+            && field_matches(&self.user, user)
+    }
+}
+
 /// Ищет пароль в `.pgpass` для заданных параметров подключения.
 ///
 /// Если хост не задан (Unix-сокет), для сопоставления используется `localhost`.
@@ -37,37 +68,6 @@ pub(crate) fn lookup(
     }
 
     None
-}
-
-/// Одна разобранная запись `.pgpass`.
-#[derive(Debug, PartialEq, Eq)]
-struct PgPassEntry {
-    host: String,
-    port: String,
-    dbname: String,
-    user: String,
-    password: String,
-}
-
-impl PgPassEntry {
-    fn parse(line: &str) -> Option<Self> {
-        let [host, port, dbname, user, password] = parse_line(line).try_into().ok()?;
-
-        Some(Self {
-            host,
-            port,
-            dbname,
-            user,
-            password,
-        })
-    }
-
-    fn matches(&self, host: &str, port: &str, dbname: &str, user: &str) -> bool {
-        field_matches(&self.host, host)
-            && field_matches(&self.port, port)
-            && field_matches(&self.dbname, dbname)
-            && field_matches(&self.user, user)
-    }
 }
 
 /// Возвращает пароль из `.pgpass`-строки, если она подходит подключению.

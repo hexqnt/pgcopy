@@ -1,5 +1,6 @@
-use anyhow::{Context, Result};
 use std::future::Future;
+
+use anyhow::{Context, Result};
 
 /// Универсальная ошибка bucket-worker с привязкой к исходной задаче.
 pub(crate) struct WorkerFailure<TTask> {

@@ -1,6 +1,7 @@
-use anyhow::{Result, bail};
 use std::env;
 use std::num::NonZeroU16;
+
+use anyhow::{Result, bail};
 use tokio_postgres::Config;
 
 /// Переопределения параметров подключения к `PostgreSQL` (из CLI или TOML-конфига).

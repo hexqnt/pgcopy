@@ -2,6 +2,61 @@ use anyhow::{Context, Result};
 
 use crate::sql::quoted_fq_name;
 
+#[derive(Debug, Clone)]
+struct SequenceColumn {
+    column_name: String,
+    sequence_name: String,
+}
+
+fn build_batch_sync_sql(
+    target_schema: &str,
+    target_name: &str,
+    sequence_columns: &[SequenceColumn],
+) -> String {
+    let table_ref = quoted_fq_name(target_schema, target_name);
+    let escaped_table_ref = table_ref.replace('\'', "''");
+    let columns_array = sql_text_array_literal(
+        sequence_columns
+            .iter()
+            .map(|column| column.column_name.as_str()),
+    );
+    let sequences_array = sql_text_array_literal(
+        sequence_columns
+            .iter()
+            .map(|column| column.sequence_name.as_str()),
+    );
+
+    // Для пустой таблицы setval выставляется на 1 с `is_called = false`,
+    // чтобы следующее nextval() вернуло именно 1.
+    format!(
+        "DO $pgcopy$
+DECLARE
+    v_column text;
+    v_sequence text;
+    v_max bigint;
+BEGIN
+    FOR v_column, v_sequence IN
+        SELECT *
+        FROM unnest({columns_array}::text[], {sequences_array}::text[])
+    LOOP
+        EXECUTE format('SELECT MAX(%I)::bigint FROM {escaped_table_ref}', v_column)
+            INTO v_max;
+        PERFORM setval(v_sequence::regclass, COALESCE(v_max, 1), v_max IS NOT NULL);
+    END LOOP;
+END
+$pgcopy$;"
+    )
+}
+
+fn sql_text_array_literal<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
+    let values = values
+        .into_iter()
+        .map(|value| format!("'{}'", value.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("ARRAY[{values}]")
+}
+
 /// После загрузки выравнивает serial/identity sequence по максимальному значению в таблице.
 pub(super) async fn sync_table_sequences(
     client: &tokio_postgres::Client,
@@ -20,12 +75,6 @@ pub(super) async fn sync_table_sequences(
         format!("failed to synchronize serial/identity sequences for {target_schema}.{target_name}")
     })?;
     Ok(())
-}
-
-#[derive(Debug, Clone)]
-struct SequenceColumn {
-    column_name: String,
-    sequence_name: String,
 }
 
 async fn resolve_sequence_columns(
@@ -78,55 +127,6 @@ async fn resolve_sequence_columns(
     }
 
     Ok(resolved)
-}
-
-fn build_batch_sync_sql(
-    target_schema: &str,
-    target_name: &str,
-    sequence_columns: &[SequenceColumn],
-) -> String {
-    let table_ref = quoted_fq_name(target_schema, target_name);
-    let escaped_table_ref = table_ref.replace('\'', "''");
-    let columns_array = sql_text_array_literal(
-        sequence_columns
-            .iter()
-            .map(|column| column.column_name.as_str()),
-    );
-    let sequences_array = sql_text_array_literal(
-        sequence_columns
-            .iter()
-            .map(|column| column.sequence_name.as_str()),
-    );
-
-    // Для пустой таблицы setval выставляется на 1 с `is_called = false`,
-    // чтобы следующее nextval() вернуло именно 1.
-    format!(
-        "DO $pgcopy$
-DECLARE
-    v_column text;
-    v_sequence text;
-    v_max bigint;
-BEGIN
-    FOR v_column, v_sequence IN
-        SELECT *
-        FROM unnest({columns_array}::text[], {sequences_array}::text[])
-    LOOP
-        EXECUTE format('SELECT MAX(%I)::bigint FROM {escaped_table_ref}', v_column)
-            INTO v_max;
-        PERFORM setval(v_sequence::regclass, COALESCE(v_max, 1), v_max IS NOT NULL);
-    END LOOP;
-END
-$pgcopy$;"
-    )
-}
-
-fn sql_text_array_literal<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
-    let values = values
-        .into_iter()
-        .map(|value| format!("'{}'", value.replace('\'', "''")))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("ARRAY[{values}]")
 }
 
 #[cfg(test)]

@@ -32,6 +32,20 @@ impl fmt::Display for InfoOutputFormat {
     }
 }
 
+#[derive(Serialize)]
+struct BundleInfoJson<'a> {
+    bundle_path: String,
+    encrypted: bool,
+    format_version: u32,
+    created_at: &'a str,
+    source_fingerprint: Option<&'a str>,
+    source_pg_version_num: i32,
+    data_format: DataFormat,
+    consistent_snapshot: bool,
+    objects_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    objects: Option<&'a [ManifestObject]>,
+}
 /// Печатает метаинформацию о bundle без подключения к `PostgreSQL`.
 pub fn run(
     bundle_path: &Path,
@@ -120,17 +134,3 @@ fn print_json(
     Ok(())
 }
 
-#[derive(Serialize)]
-struct BundleInfoJson<'a> {
-    bundle_path: String,
-    encrypted: bool,
-    format_version: u32,
-    created_at: &'a str,
-    source_fingerprint: Option<&'a str>,
-    source_pg_version_num: i32,
-    data_format: DataFormat,
-    consistent_snapshot: bool,
-    objects_count: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    objects: Option<&'a [ManifestObject]>,
-}

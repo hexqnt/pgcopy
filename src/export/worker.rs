@@ -11,15 +11,15 @@ use crate::types::DataFormat;
 
 use super::object::export_object;
 
+/// Результат worker-а экспорта:
+/// completed содержит готовые manifest-объекты и время обработки; failure — первая фатальная ошибка.
+pub type ExportWorkerOutcome = WorkerOutcome<ObjectConfig, ExportObjectResult>;
+
 /// Результат экспорта одного объекта внутри worker-а.
 pub struct ExportObjectResult {
     pub manifest_object: ManifestObject,
     pub elapsed: Duration,
 }
-
-/// Результат worker-а экспорта:
-/// completed содержит готовые manifest-объекты и время обработки; failure — первая фатальная ошибка.
-pub type ExportWorkerOutcome = WorkerOutcome<ObjectConfig, ExportObjectResult>;
 
 /// Выполняет экспорт выделенного набора объектов одним worker-подключением.
 pub async fn export_worker(

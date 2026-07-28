@@ -9,115 +9,6 @@ use crate::{
     config, crypto, env_dsn, export, importer, info, startup,
 };
 
-pub(crate) async fn run(cli: Cli) -> Result<()> {
-    let progress_enabled = !cli.quiet && !cli.no_progress;
-    let startup_color = !cli.quiet && startup::print_startup_banner();
-    init_tracing(cli.quiet);
-
-    match cli.command {
-        Commands::Export {
-            config: config_path,
-            out,
-            concurrency,
-            password,
-            connection,
-        } => {
-            let cfg = config::load(&config_path)?;
-            let dsn_overrides = connection.into_overrides();
-            let source_config = env_dsn::build(&dsn_overrides, cfg.connection.as_ref())?;
-
-            if cli.dry_run {
-                print_dry_run_export(
-                    &cfg,
-                    &config_path,
-                    &out,
-                    concurrency,
-                    password.as_deref(),
-                    &source_config,
-                    startup_color,
-                )?;
-                return Ok(());
-            }
-
-            if !cli.quiet {
-                startup::print_export_startup_details(
-                    &config_path,
-                    &out,
-                    &source_config,
-                    startup_color,
-                );
-            }
-            export::run(
-                &config_path,
-                &out,
-                concurrency,
-                password.as_deref(),
-                source_config,
-                progress_enabled,
-            )
-            .await?;
-        }
-        Commands::Import {
-            input,
-            mode,
-            concurrency,
-            ddl_only,
-            password,
-            connection,
-        } => {
-            let dsn_overrides = connection.into_overrides();
-            let target_config = env_dsn::build(&dsn_overrides, None)?;
-
-            if cli.dry_run {
-                print_dry_run_import(
-                    &input,
-                    mode,
-                    concurrency.get(),
-                    ddl_only,
-                    password.as_deref(),
-                    &target_config,
-                    startup_color,
-                )?;
-                return Ok(());
-            }
-
-            if !cli.quiet {
-                startup::print_import_startup_details(
-                    &input,
-                    mode,
-                    concurrency.get(),
-                    ddl_only,
-                    &target_config,
-                    startup_color,
-                );
-            }
-            importer::run(
-                &input,
-                mode,
-                concurrency,
-                ddl_only,
-                password.as_deref(),
-                target_config,
-                progress_enabled,
-            )
-            .await?;
-        }
-        Commands::Info {
-            input,
-            password,
-            format,
-            objects,
-        } => {
-            if !cli.quiet {
-                startup::print_info_startup_details(&input, format, objects, startup_color);
-            }
-            info::run(&input, password.as_deref(), format, objects)?;
-        }
-    }
-
-    Ok(())
-}
-
 fn init_tracing(quiet: bool) {
     let default_directive = if quiet { "warn" } else { "info" };
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -227,3 +118,112 @@ fn print_dry_run_import(
 
     Ok(())
 }
+pub(crate) async fn run(cli: Cli) -> Result<()> {
+    let progress_enabled = !cli.quiet && !cli.no_progress;
+    let startup_color = !cli.quiet && startup::print_startup_banner();
+    init_tracing(cli.quiet);
+
+    match cli.command {
+        Commands::Export {
+            config: config_path,
+            out,
+            concurrency,
+            password,
+            connection,
+        } => {
+            let cfg = config::load(&config_path)?;
+            let dsn_overrides = connection.into_overrides();
+            let source_config = env_dsn::build(&dsn_overrides, cfg.connection.as_ref())?;
+
+            if cli.dry_run {
+                print_dry_run_export(
+                    &cfg,
+                    &config_path,
+                    &out,
+                    concurrency,
+                    password.as_deref(),
+                    &source_config,
+                    startup_color,
+                )?;
+                return Ok(());
+            }
+
+            if !cli.quiet {
+                startup::print_export_startup_details(
+                    &config_path,
+                    &out,
+                    &source_config,
+                    startup_color,
+                );
+            }
+            export::run(
+                &config_path,
+                &out,
+                concurrency,
+                password.as_deref(),
+                source_config,
+                progress_enabled,
+            )
+            .await?;
+        }
+        Commands::Import {
+            input,
+            mode,
+            concurrency,
+            ddl_only,
+            password,
+            connection,
+        } => {
+            let dsn_overrides = connection.into_overrides();
+            let target_config = env_dsn::build(&dsn_overrides, None)?;
+
+            if cli.dry_run {
+                print_dry_run_import(
+                    &input,
+                    mode,
+                    concurrency.get(),
+                    ddl_only,
+                    password.as_deref(),
+                    &target_config,
+                    startup_color,
+                )?;
+                return Ok(());
+            }
+
+            if !cli.quiet {
+                startup::print_import_startup_details(
+                    &input,
+                    mode,
+                    concurrency.get(),
+                    ddl_only,
+                    &target_config,
+                    startup_color,
+                );
+            }
+            importer::run(
+                &input,
+                mode,
+                concurrency,
+                ddl_only,
+                password.as_deref(),
+                target_config,
+                progress_enabled,
+            )
+            .await?;
+        }
+        Commands::Info {
+            input,
+            password,
+            format,
+            objects,
+        } => {
+            if !cli.quiet {
+                startup::print_info_startup_details(&input, format, objects, startup_color);
+            }
+            info::run(&input, password.as_deref(), format, objects)?;
+        }
+    }
+
+    Ok(())
+}
+

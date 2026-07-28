@@ -5,84 +5,6 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::{env_dsn, importer, info};
 
-#[derive(Debug, Parser)]
-#[command(name = "pgcopy")]
-#[command(about = "Export/import selected PostgreSQL objects into a single bundle file")]
-#[command(
-    long_about = "pgcopy exports selected PostgreSQL tables/materialized views/views into one compressed bundle \
-and imports that bundle into another PostgreSQL database."
-)]
-#[command(
-    after_help = "Connection parameters can be provided via CLI flags or PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD.\n\
-Bundle encryption password can be provided via --password or environment variable PASSWORD.\n\n\
-Run `pgcopy export --help`, `pgcopy import --help`, or `pgcopy info --help` for command-specific examples."
-)]
-pub(crate) struct Cli {
-    #[arg(
-        long,
-        global = true,
-        help = "Suppress non-essential output (startup banner and progress bars)"
-    )]
-    pub(crate) quiet: bool,
-    #[arg(
-        long,
-        global = true,
-        help = "Disable progress bars (useful for CI logs)"
-    )]
-    pub(crate) no_progress: bool,
-    #[arg(
-        long,
-        global = true,
-        help = "Resolve configuration and print summary without connecting to PostgreSQL or writing files"
-    )]
-    pub(crate) dry_run: bool,
-    #[command(subcommand)]
-    pub(crate) command: Commands,
-}
-
-#[derive(Debug, Clone, Args, Default)]
-pub(crate) struct PgConnectionArgs {
-    #[arg(long, value_name = "HOST", help = "PostgreSQL host (fallback: PGHOST)")]
-    host: Option<String>,
-    #[arg(
-        long,
-        value_name = "PORT",
-        help = "PostgreSQL port (fallback: PGPORT, default: 5432)"
-    )]
-    port: Option<NonZeroU16>,
-    #[arg(
-        long,
-        value_name = "DBNAME",
-        help = "PostgreSQL database name (fallback: PGDATABASE)"
-    )]
-    dbname: Option<String>,
-    #[arg(
-        long = "username",
-        visible_alias = "user",
-        value_name = "USER",
-        help = "PostgreSQL user name (fallback: PGUSER)"
-    )]
-    username: Option<String>,
-    #[arg(
-        long = "pgpassword",
-        value_name = "PASSWORD",
-        help = "PostgreSQL password (fallback: PGPASSWORD)"
-    )]
-    pgpassword: Option<String>,
-}
-
-impl PgConnectionArgs {
-    pub(crate) fn into_overrides(self) -> env_dsn::ConnectionOverrides {
-        env_dsn::ConnectionOverrides {
-            host: self.host,
-            port: self.port,
-            dbname: self.dbname,
-            user: self.username,
-            password: self.pgpassword,
-        }
-    }
-}
-
 #[derive(Debug, Subcommand)]
 pub(crate) enum Commands {
     #[command(
@@ -207,3 +129,81 @@ DDL only:\n\
         objects: bool,
     },
 }
+#[derive(Debug, Parser)]
+#[command(name = "pgcopy")]
+#[command(about = "Export/import selected PostgreSQL objects into a single bundle file")]
+#[command(
+    long_about = "pgcopy exports selected PostgreSQL tables/materialized views/views into one compressed bundle \
+and imports that bundle into another PostgreSQL database."
+)]
+#[command(
+    after_help = "Connection parameters can be provided via CLI flags or PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD.\n\
+Bundle encryption password can be provided via --password or environment variable PASSWORD.\n\n\
+Run `pgcopy export --help`, `pgcopy import --help`, or `pgcopy info --help` for command-specific examples."
+)]
+pub(crate) struct Cli {
+    #[arg(
+        long,
+        global = true,
+        help = "Suppress non-essential output (startup banner and progress bars)"
+    )]
+    pub(crate) quiet: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "Disable progress bars (useful for CI logs)"
+    )]
+    pub(crate) no_progress: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "Resolve configuration and print summary without connecting to PostgreSQL or writing files"
+    )]
+    pub(crate) dry_run: bool,
+    #[command(subcommand)]
+    pub(crate) command: Commands,
+}
+
+#[derive(Debug, Clone, Args, Default)]
+pub(crate) struct PgConnectionArgs {
+    #[arg(long, value_name = "HOST", help = "PostgreSQL host (fallback: PGHOST)")]
+    host: Option<String>,
+    #[arg(
+        long,
+        value_name = "PORT",
+        help = "PostgreSQL port (fallback: PGPORT, default: 5432)"
+    )]
+    port: Option<NonZeroU16>,
+    #[arg(
+        long,
+        value_name = "DBNAME",
+        help = "PostgreSQL database name (fallback: PGDATABASE)"
+    )]
+    dbname: Option<String>,
+    #[arg(
+        long = "username",
+        visible_alias = "user",
+        value_name = "USER",
+        help = "PostgreSQL user name (fallback: PGUSER)"
+    )]
+    username: Option<String>,
+    #[arg(
+        long = "pgpassword",
+        value_name = "PASSWORD",
+        help = "PostgreSQL password (fallback: PGPASSWORD)"
+    )]
+    pgpassword: Option<String>,
+}
+
+impl PgConnectionArgs {
+    pub(crate) fn into_overrides(self) -> env_dsn::ConnectionOverrides {
+        env_dsn::ConnectionOverrides {
+            host: self.host,
+            port: self.port,
+            dbname: self.dbname,
+            user: self.username,
+            password: self.pgpassword,
+        }
+    }
+}
+

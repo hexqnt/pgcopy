@@ -50,6 +50,160 @@ pub struct RelationRef {
     pub kind: RelationKind,
 }
 
+/// Выбирает определения только для эффективного списка колонок.
+pub fn pick_column_defs(
+    all_defs: &[ColumnDef],
+    effective_columns: &[String],
+    source_schema: &str,
+    source_name: &str,
+) -> Result<Vec<ColumnDef>> {
+    let by_name = all_defs
+        .iter()
+        .map(|definition| (definition.name.as_str(), definition))
+        .collect::<HashMap<_, _>>();
+
+    effective_columns
+        .iter()
+        .map(|column| {
+            by_name
+                .get(column.as_str())
+                .map(|definition| (*definition).clone())
+                .with_context(|| {
+                    format!(
+                        "column definition for {source_schema}.{source_name}.{column} is missing"
+                    )
+                })
+        })
+        .collect()
+}
+
+/// Генерирует DDL целевой таблицы для импорта.
+///
+/// Отдельно создаёт локальные sequence для serial-like default выражений,
+/// чтобы не ссылаться на sequence исходной БД.
+pub fn create_table_ddl(target_schema: &str, target_name: &str, columns: &[ColumnDef]) -> String {
+    let mut sequence_specs = Vec::new();
+    let body = columns
+        .iter()
+        .map(|column| {
+            let mut parts = vec![format!("{} {}", quote_ident(&column.name), column.type_sql)];
+
+            if let Some(default_expr) = column.default_expr.as_deref() {
+                if is_regclass_nextval_default(default_expr) {
+                    // Явно пере-привязываем serial/identity-подобный default
+                    // к sequence в целевой схеме.
+                    let sequence_name = sequence_name_for_column(target_name, &column.name);
+                    let sequence_fq_name = quoted_fq_name(target_schema, &sequence_name);
+                    sequence_specs.push((sequence_name, column.name.clone()));
+                    parts.push(format!("DEFAULT nextval('{sequence_fq_name}'::regclass)"));
+                } else {
+                    parts.push(format!("DEFAULT {default_expr}"));
+                }
+            }
+
+            if column.not_null {
+                parts.push("NOT NULL".to_owned());
+            }
+
+            parts.join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join(",\n    ");
+
+    let mut ddl = String::new();
+    for (sequence_name, _) in &sequence_specs {
+        writeln!(
+            ddl,
+            "CREATE SEQUENCE {};",
+            quoted_fq_name(target_schema, sequence_name)
+        )
+        .expect("writing to string is infallible");
+    }
+
+    write!(
+        ddl,
+        "CREATE TABLE {} (\n    {body}\n);\n",
+        quoted_fq_name(target_schema, target_name)
+    )
+    .expect("writing to string is infallible");
+
+    for (sequence_name, column_name) in &sequence_specs {
+        writeln!(
+            ddl,
+            "ALTER SEQUENCE {} OWNED BY {}.{};",
+            quoted_fq_name(target_schema, sequence_name),
+            quoted_fq_name(target_schema, target_name),
+            quote_ident(column_name)
+        )
+        .expect("writing to string is infallible");
+    }
+
+    ddl
+}
+
+/// Генерирует DDL view для импорта.
+pub fn create_view_ddl(target_schema: &str, target_name: &str, view_sql: &str) -> String {
+    let normalized_view_sql = view_sql.trim().trim_end_matches(';');
+    format!(
+        "CREATE VIEW {} AS\n{normalized_view_sql};\n",
+        quoted_fq_name(target_schema, target_name)
+    )
+}
+
+/// Формирует SQL для `COPY ... TO STDOUT`.
+pub fn copy_out_sql(normalized_select_sql: &str, data_format: DataFormat) -> String {
+    format!(
+        "COPY ({normalized_select_sql}) TO STDOUT ({})",
+        copy_format_options(data_format)
+    )
+}
+
+/// Формирует SQL для `COPY ... FROM STDIN`.
+pub fn copy_in_sql(
+    target_schema: &str,
+    target_name: &str,
+    effective_columns: &[String],
+    data_format: DataFormat,
+) -> String {
+    let quoted_columns = effective_columns
+        .iter()
+        .map(|column| quote_ident(column))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!(
+        "COPY {} ({quoted_columns}) FROM STDIN ({})",
+        quoted_fq_name(target_schema, target_name),
+        copy_format_options(data_format)
+    )
+}
+
+const fn copy_format_options(data_format: DataFormat) -> &'static str {
+    match data_format {
+        DataFormat::Binary => "FORMAT binary",
+        // Keep NULL marker explicit and symmetric for export/import.
+        DataFormat::Csv => "FORMAT csv, NULL '\\\\N'",
+    }
+}
+
+fn is_regclass_nextval_default(default_expr: &str) -> bool {
+    let expr = default_expr.trim();
+    expr.starts_with("nextval(") && expr.ends_with("::regclass)")
+}
+
+fn sequence_name_for_column(target_name: &str, column_name: &str) -> String {
+    format!("{target_name}_{column_name}_seq")
+}
+
+fn relation_kind_from_relkind(relkind: &str, schema: &str, name: &str) -> Result<RelationKind> {
+    match relkind {
+        "r" | "p" | "f" => Ok(RelationKind::Table),
+        "v" => Ok(RelationKind::View),
+        "m" => Ok(RelationKind::MaterializedView),
+        other => bail!("unsupported relation kind '{other}' for {schema}.{name}"),
+    }
+}
+
 /// Устанавливает подключение к `PostgreSQL` и запускает background-task драйвера.
 pub async fn connect(config: &Config) -> Result<Client> {
     let (client, connection) = config
@@ -321,160 +475,6 @@ pub async fn view_dependencies_transitive(
             })
         })
         .collect::<Result<Vec<_>>>()
-}
-
-/// Выбирает определения только для эффективного списка колонок.
-pub fn pick_column_defs(
-    all_defs: &[ColumnDef],
-    effective_columns: &[String],
-    source_schema: &str,
-    source_name: &str,
-) -> Result<Vec<ColumnDef>> {
-    let by_name = all_defs
-        .iter()
-        .map(|definition| (definition.name.as_str(), definition))
-        .collect::<HashMap<_, _>>();
-
-    effective_columns
-        .iter()
-        .map(|column| {
-            by_name
-                .get(column.as_str())
-                .map(|definition| (*definition).clone())
-                .with_context(|| {
-                    format!(
-                        "column definition for {source_schema}.{source_name}.{column} is missing"
-                    )
-                })
-        })
-        .collect()
-}
-
-/// Генерирует DDL целевой таблицы для импорта.
-///
-/// Отдельно создаёт локальные sequence для serial-like default выражений,
-/// чтобы не ссылаться на sequence исходной БД.
-pub fn create_table_ddl(target_schema: &str, target_name: &str, columns: &[ColumnDef]) -> String {
-    let mut sequence_specs = Vec::new();
-    let body = columns
-        .iter()
-        .map(|column| {
-            let mut parts = vec![format!("{} {}", quote_ident(&column.name), column.type_sql)];
-
-            if let Some(default_expr) = column.default_expr.as_deref() {
-                if is_regclass_nextval_default(default_expr) {
-                    // Явно пере-привязываем serial/identity-подобный default
-                    // к sequence в целевой схеме.
-                    let sequence_name = sequence_name_for_column(target_name, &column.name);
-                    let sequence_fq_name = quoted_fq_name(target_schema, &sequence_name);
-                    sequence_specs.push((sequence_name, column.name.clone()));
-                    parts.push(format!("DEFAULT nextval('{sequence_fq_name}'::regclass)"));
-                } else {
-                    parts.push(format!("DEFAULT {default_expr}"));
-                }
-            }
-
-            if column.not_null {
-                parts.push("NOT NULL".to_owned());
-            }
-
-            parts.join(" ")
-        })
-        .collect::<Vec<_>>()
-        .join(",\n    ");
-
-    let mut ddl = String::new();
-    for (sequence_name, _) in &sequence_specs {
-        writeln!(
-            ddl,
-            "CREATE SEQUENCE {};",
-            quoted_fq_name(target_schema, sequence_name)
-        )
-        .expect("writing to string is infallible");
-    }
-
-    write!(
-        ddl,
-        "CREATE TABLE {} (\n    {body}\n);\n",
-        quoted_fq_name(target_schema, target_name)
-    )
-    .expect("writing to string is infallible");
-
-    for (sequence_name, column_name) in &sequence_specs {
-        writeln!(
-            ddl,
-            "ALTER SEQUENCE {} OWNED BY {}.{};",
-            quoted_fq_name(target_schema, sequence_name),
-            quoted_fq_name(target_schema, target_name),
-            quote_ident(column_name)
-        )
-        .expect("writing to string is infallible");
-    }
-
-    ddl
-}
-
-/// Генерирует DDL view для импорта.
-pub fn create_view_ddl(target_schema: &str, target_name: &str, view_sql: &str) -> String {
-    let normalized_view_sql = view_sql.trim().trim_end_matches(';');
-    format!(
-        "CREATE VIEW {} AS\n{normalized_view_sql};\n",
-        quoted_fq_name(target_schema, target_name)
-    )
-}
-
-/// Формирует SQL для `COPY ... TO STDOUT`.
-pub fn copy_out_sql(normalized_select_sql: &str, data_format: DataFormat) -> String {
-    format!(
-        "COPY ({normalized_select_sql}) TO STDOUT ({})",
-        copy_format_options(data_format)
-    )
-}
-
-/// Формирует SQL для `COPY ... FROM STDIN`.
-pub fn copy_in_sql(
-    target_schema: &str,
-    target_name: &str,
-    effective_columns: &[String],
-    data_format: DataFormat,
-) -> String {
-    let quoted_columns = effective_columns
-        .iter()
-        .map(|column| quote_ident(column))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    format!(
-        "COPY {} ({quoted_columns}) FROM STDIN ({})",
-        quoted_fq_name(target_schema, target_name),
-        copy_format_options(data_format)
-    )
-}
-
-const fn copy_format_options(data_format: DataFormat) -> &'static str {
-    match data_format {
-        DataFormat::Binary => "FORMAT binary",
-        // Keep NULL marker explicit and symmetric for export/import.
-        DataFormat::Csv => "FORMAT csv, NULL '\\\\N'",
-    }
-}
-
-fn is_regclass_nextval_default(default_expr: &str) -> bool {
-    let expr = default_expr.trim();
-    expr.starts_with("nextval(") && expr.ends_with("::regclass)")
-}
-
-fn sequence_name_for_column(target_name: &str, column_name: &str) -> String {
-    format!("{target_name}_{column_name}_seq")
-}
-
-fn relation_kind_from_relkind(relkind: &str, schema: &str, name: &str) -> Result<RelationKind> {
-    match relkind {
-        "r" | "p" | "f" => Ok(RelationKind::Table),
-        "v" => Ok(RelationKind::View),
-        "m" => Ok(RelationKind::MaterializedView),
-        other => bail!("unsupported relation kind '{other}' for {schema}.{name}"),
-    }
 }
 
 #[cfg(test)]

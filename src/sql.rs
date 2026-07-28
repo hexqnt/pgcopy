@@ -1,5 +1,6 @@
-use anyhow::{Result, bail};
 use std::fmt;
+
+use anyhow::{Result, bail};
 
 /// Строго валидированный SQL-идентификатор (ASCII letters/digits/_).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
