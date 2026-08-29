@@ -1,127 +1,148 @@
 # pgcopy
 
-`pgcopy` — CLI-утилита, которая экспортирует выбранные объекты PostgreSQL (таблицы, представления и материализованные
-представления) в один `bundle`-файл и затем импортирует их в другую БД **в виде обычных таблиц**.
+[🇺🇸 English](./README.md) · [🇷🇺 Русский](./README.ru.md)
 
-## Содержание
+`pgcopy` is a command-line tool for moving selected PostgreSQL tables, views, and materialized views between databases. It exports their schema and data into a single compressed bundle, then imports the bundle into another database.
 
-- [Возможности](#возможности)
-- [Демо](#демо)
-- [Быстрый старт](#быстрый-старт)
-- [Команды и флаги](#команды-и-флаги)
-- [Подключение к PostgreSQL](#подключение-к-postgresql)
-- [Шифрование bundle](#шифрование-bundle)
-- [`config.toml`](#configtoml)
-- [Типовой workflow](#типовой-workflow)
-- [Сборка проекта](#сборка-проекта)
+By default, source objects are materialized as regular tables at the destination. A view can also be preserved with `export_as = "view"`.
 
-## Возможности
+## Features
 
-- `export`: снимает `DDL` + данные выбранных объектов в один `bundle` (по умолчанию `tar.zst`), опционально шифрует
-  паролем.
-- `import`: разворачивает `bundle` в целевую БД как таблицы (стратегии `replace`/`append`, режим `--ddl-only`).
-- `info`: показывает метаданные `bundle` без подключения к PostgreSQL.
-- Параллельная обработка объектов: `--concurrency` (для `export` и `import`).
+- Export multiple PostgreSQL objects into one `tar.zst` bundle.
+- Import with `replace` or `append` semantics, or create schema only with `--ddl-only`.
+- Select columns and rows with a compact SQL-like configuration.
+- Process independent objects concurrently.
+- Encrypt bundles with a passphrase.
+- Inspect bundle metadata without connecting to PostgreSQL.
 
-## Демо
+## Installation
 
-Экспорт:
+### Prebuilt binaries
 
-```sh
-export PGHOST=company-host
-export PGPORT=5432
-export PGUSER=pguser
-export PGPASSWORD=pgpassword
-export PGDATABASE=company-dwh
-pgcopy export --config config.toml --out bundle.tar.zst
-```
+Download the archive for your platform from [GitHub Releases](https://github.com/hexqnt/pgcopy/releases/latest):
 
-![Экспорт](images/export.gif "export")
+| Platform                         | Archive suffix                     |
+| -------------------------------- | ---------------------------------- |
+| Linux x86-64 (glibc)             | `x86_64-unknown-linux-gnu.tar.gz`  |
+| Linux x86-64 (static musl build) | `x86_64-unknown-linux-musl.tar.gz` |
+| Windows x86-64                   | `x86_64-pc-windows-msvc.zip`       |
+| macOS Apple Silicon              | `aarch64-apple-darwin.tar.gz`      |
 
-Импорт:
-
-```sh
-pgcopy import --in bundle.tar.zst  --host localhost --dbname gas_dwh --username pguser --pgpassword pguser
-```
-
-![Импорт](images/import.gif "import")
-
-## Быстрый старт
-
-1. Составьте `config.toml` со списком объектов.
-2. Укажите параметры подключения к PostgreSQL через CLI, TOML-конфиг или переменные окружения (см. ниже).
-3. На исходной БД выполните экспорт:
-
-   ```bash
-   pgcopy export --config ./config.toml --out ./bundle.tar.zst
-   ```
-
-4. На целевой стороне выполните импорт:
-
-   ```bash
-   pgcopy import --in ./bundle.tar.zst --mode replace
-   ```
-
-## Команды и флаги
-
-Синопсис:
+On Linux or macOS, extract the archive, rename the versioned executable, and place it on your `PATH`:
 
 ```bash
-pgcopy export --config <path/to/config.toml> --out <path/to/bundle> [--concurrency N] [--password PASSWORD] [--dry-run] [--quiet] [--no-progress]
-pgcopy import --in <path/to/bundle> [--mode replace|append] [--concurrency N] [--ddl-only] [--password PASSWORD] [--dry-run] [--quiet] [--no-progress]
-pgcopy info --in <path/to/bundle> [--format text|json] [--objects] [--password PASSWORD] [--quiet]
+tar -xzf pgcopy-vX.Y.Z-<target>.tar.gz
+mkdir -p ~/.local/bin
+install -m 755 pgcopy-vX.Y.Z-<target> ~/.local/bin/pgcopy
+pgcopy --help
 ```
 
-Подсказка: `pgcopy --help`, `pgcopy export --help`, `pgcopy import --help`, `pgcopy info --help`.
+Replace `vX.Y.Z` and `<target>` with the values from the downloaded filename. Make sure `~/.local/bin` is on your `PATH`.
 
-Глобальные флаги:
+On Windows, extract the ZIP archive and either run the executable directly or rename it to `pgcopy.exe` and move it into a directory on `PATH`:
 
-- `--quiet`: отключает служебный вывод (баннер запуска и progress bars).
-- `--no-progress`: отключает только progress bars (удобно для CI-логов).
-- `--dry-run`: разрешает параметры и печатает сводку без подключения к PostgreSQL и записи файлов.
+```powershell
+Expand-Archive -Path .\pgcopy-vX.Y.Z-x86_64-pc-windows-msvc.zip -DestinationPath .\pgcopy
+Rename-Item .\pgcopy\pgcopy-vX.Y.Z-x86_64-pc-windows-msvc.exe pgcopy.exe
+.\pgcopy\pgcopy.exe --help
+```
+
+### From source
+
+Install the [Rust toolchain](https://rustup.rs/), then install `pgcopy` from a local clone:
+
+```bash
+git clone https://github.com/hexqnt/pgcopy.git
+cd pgcopy
+cargo install --locked --path .
+pgcopy --help
+```
+
+Cargo installs the executable into `~/.cargo/bin` by default; this directory normally needs to be on your `PATH`.
+
+## Quick start
+
+Create `config.toml` describing what to export:
+
+```toml
+[general]
+data_format = "binary"
+concurrency = 4
+
+[[objects]]
+select = "select * from public.orders"
+
+[[objects]]
+select = "select id, total_amount from public.invoices where paid = true"
+target_schema = "archive"
+target_name = "paid_invoices"
+```
+
+Set the standard PostgreSQL connection variables for the source database and export the bundle:
+
+```bash
+export PGHOST=source.example.com
+export PGPORT=5432
+export PGDATABASE=app_db
+export PGUSER=app_user
+export PGPASSWORD=secret
+
+pgcopy export --config ./config.toml --out ./bundle.tar.zst
+```
+
+Point the variables at the destination database and import it:
+
+```bash
+export PGHOST=destination.example.com
+export PGDATABASE=app_copy
+
+pgcopy import --in ./bundle.tar.zst --mode replace
+```
+
+![Export demo](images/export.gif "Export")
+
+![Import demo](images/import.gif "Import")
+
+## Commands
+
+```text
+pgcopy export --config <config.toml> --out <bundle> [options]
+pgcopy import --in <bundle> [options]
+pgcopy info --in <bundle> [options]
+```
+
+Run `pgcopy --help` or `pgcopy <command> --help` for the complete CLI reference.
 
 ### `export`
 
-- `--config`: путь к `config.toml`.
-- `--out`: путь к выходному `bundle` (например `./bundle.tar.zst`).
-- `--concurrency`: параллелизм экспорта (поддерживается алиас `--concurency` без второй `r`).
-  Приоритет разрешения значения: `CLI > general.concurrency из TOML > PGCOPY_CONCURRENCY > 1`.
-- `--password`: пароль для шифрования `bundle` (fallback: env `PASSWORD`).
-- Параметры подключения к source PostgreSQL: см. раздел ниже.
+- `--config`: export configuration file.
+- `--out`: destination bundle path.
+- `--concurrency N`: number of objects exported concurrently. Resolution order: CLI, `general.concurrency`, `PGCOPY_CONCURRENCY`, then `1`.
+- `--password`: bundle encryption passphrase; falls back to the `PASSWORD` environment variable.
 
 ### `import`
 
-- `--in`: путь к входному `bundle`, созданному командой `export`.
-- `--mode`: стратегия импорта при наличии целевой таблицы:
-  - `replace` (по умолчанию): дропает целевую таблицу, затем создает заново и загружает данные. Операция выполняется
-    атомарно на уровне объекта (`BEGIN/COMMIT`): при ошибке во время `replace` изменения по этому объекту откатываются
-    (`ROLLBACK`).
-  - `append`: если таблица уже есть, проверяет совместимость и дозаписывает данные.
-- `--ddl-only`: выполняет только DDL-часть импорта (создание/подготовка таблиц), без загрузки данных.
-- `--concurrency`: параллелизм импорта (количество объектов, обрабатываемых параллельно; алиас `--concurency`).
-- `--password`: пароль для расшифровки `bundle` (fallback: env `PASSWORD`).
-- Параметры подключения к target PostgreSQL: см. раздел ниже.
+- `--in`: bundle created by `pgcopy export`.
+- `--mode replace|append`: replace an existing target object (the default), or append to a compatible table.
+- `--concurrency N`: number of objects imported concurrently; defaults to `1`.
+- `--ddl-only`: create target objects without loading rows.
+- `--password`: bundle decryption passphrase; falls back to `PASSWORD`.
 
 ### `info`
 
-- `--format text` (по умолчанию): человекочитаемый вывод.
-- `--format json`: машинночитаемый вывод.
-- `--objects`: печатает метаданные по каждому объекту из manifest.
-- `--password`: пароль для расшифровки `bundle` (fallback: env `PASSWORD`).
+Reads a bundle without connecting to PostgreSQL:
 
-## Подключение к PostgreSQL
+```bash
+pgcopy info --in ./bundle.tar.zst
+pgcopy info --in ./bundle.tar.zst --objects
+pgcopy info --in ./bundle.tar.zst --format json
+```
 
-Параметры подключения можно задавать несколькими способами. Приоритет (от высшего к низшему):
+Global options include `--dry-run`, `--quiet`, and `--no-progress`.
 
-| Приоритет | host                   | port                   | dbname                 | user                   | password              |
-|-----------|------------------------|------------------------|------------------------|------------------------|-----------------------|
-| 1         | `--host`               | `--port`               | `--dbname`             | `--username`           | `--pgpassword`        |
-| 2         | `[connection]` в TOML  | `[connection]` в TOML  | `[connection]` в TOML  | `[connection]` в TOML  | `[connection]` в TOML |
-| 3         | –                      | –                      | –                      | –                      | `.pgpass`             |
-| 4         | `PGHOST`               | `PGPORT`               | `PGDATABASE`           | `PGUSER`               | `PGPASSWORD`          |
-| Дефолт    | Unix-сокет             | `5432`                 | OS-user / `postgres`   | OS-user / `postgres`   | (нет)                 |
+## PostgreSQL connection
 
-### Через CLI-флаги
+The `export` and `import` commands accept these connection options:
 
 - `--host`
 - `--port`
@@ -129,111 +150,24 @@ pgcopy info --in <path/to/bundle> [--format text|json] [--objects] [--password P
 - `--username` (alias: `--user`)
 - `--pgpassword`
 
-### Через секцию `[connection]` в TOML-конфиге
+The standard `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and `PGPASSWORD` environment variables are also supported. CLI values take precedence over configuration-file values, which take precedence over environment variables and defaults. When no explicit password is provided, `pgcopy` also checks the standard `.pgpass` file.
 
-В `config.toml` (только для команды `export`) можно указать параметры подключения в секции `[connection]`.
-Значения могут ссылаться на переменные окружения через `{VAR_NAME}`.
-Если переменная не установлена — параметр считается не заданным (как будто его нет в конфиге).
+For `export`, connection settings may be stored in `config.toml`. Values can reference environment variables as `{VARIABLE}`:
 
 ```toml
 [connection]
 host = "{MY_PGHOST}"
-port = "{MY_PGPORT}"
-dbname = "myapp"
-user = "app_user"
+port = 5432
+dbname = "analytics"
+user = "reader"
 password = "{MY_PGPASSWORD}"
 ```
 
-Или просто явные значения:
+Keeping passwords in environment variables or `.pgpass` is preferable to putting them on the command line or in the configuration file.
 
-```toml
-[connection]
-host = "db.example.com"
-port = 5433
-dbname = "analytics"
-user = "reader"
-```
+## Configuration
 
-### Через переменные окружения
-
-Стандартные переменные окружения PostgreSQL:
-
-- `PGHOST` (по умолчанию Unix-сокет / `localhost`, если не задан)
-- `PGPORT` (по умолчанию `5432`, если не задан)
-- `PGDATABASE` (по умолчанию имя пользователя ОС, если не задана)
-- `PGUSER` (по умолчанию имя пользователя ОС, если не задан)
-- `PGPASSWORD` (опционально)
-
-Если пароль не задан через `--pgpassword`, `[connection]` или `PGPASSWORD`, дополнительно используется стандартный `.pgpass`
-(`~/.pgpass` на Unix, `%APPDATA%\postgres\pgpass.conf` на Windows).
-
-### Примеры
-
-Пример через env:
-
-```bash
-export PGHOST=127.0.0.1
-export PGPORT=5432
-export PGDATABASE=app_db
-export PGUSER=app_user
-export PGPASSWORD=secret
-```
-
-Пример через CLI:
-
-```bash
-pgcopy export \
-  --config ./config.toml \
-  --out ./bundle.tar.zst \
-  --host 127.0.0.1 \
-  --port 5432 \
-  --dbname app_db \
-  --username app_user \
-  --pgpassword secret
-```
-
-Пример через TOML-конфиг с env-ссылками:
-
-```bash
-# config.toml содержит:
-# [connection]
-# host = "{MY_HOST}"
-# dbname = "{MY_DB}"
-
-export MY_HOST=db.internal
-export MY_DB=analytics
-pgcopy export --config ./config.toml --out ./bundle.tar.zst
-```
-
-## Шифрование bundle
-
-`bundle` можно шифровать/расшифровывать паролем:
-
-- через `--password`
-- или через env `PASSWORD` (если `--password` не указан)
-
-Если пароль не задан ни там, ни там, `bundle` создается/читается без шифрования.
-
-Пример экспорта с паролем:
-
-```bash
-pgcopy export --config ./config.toml --out ./bundle.enc --password "strong-passphrase"
-```
-
-Пример импорта с паролем из env:
-
-```bash
-export PASSWORD="strong-passphrase"
-pgcopy import --in ./bundle.enc --mode replace
-```
-
-Если `bundle` зашифрован, а пароль не передан, `import`/`info` завершатся ошибкой.
-
-## `config.toml`
-
-Конфиг используется командой `export` и описывает список объектов для выгрузки и общие параметры экспорта.
-
-Минимальный пример:
+The export configuration contains optional general settings and one or more objects:
 
 ```toml
 [general]
@@ -246,136 +180,52 @@ concurrency = 4
 select = "select * from public.orders"
 
 [[objects]]
-select = "select id, total_amount, created_at from public.orders"
-target_schema = "archive"
-target_name = "orders_snapshot"
+select = "select * except (internal_note) from public.customers"
+target_schema = "snapshot"
+target_name = "customers"
 
 [[objects]]
-select = "select day, region, revenue from reporting.v_sales_daily"
-target_schema = "snapshots"
-target_name = "sales_daily"
-
-[[objects]]
-select = "select * from public.orders where created_at >= date '2026-01-01'"
-
-[[objects]]
-select = "select * from reporting.v_sales_daily"
+select = "select * from reporting.sales_daily"
 export_as = "view"
 ```
 
-### Общие настройки (`[general]`)
+### General settings
 
-- `data_format`: `binary` (по умолчанию) или `csv`.
-- `compression`: сейчас поддерживается только `zstd`.
-- `consistent_snapshot`: включает согласованное чтение в одном `REPEATABLE READ` snapshot (по умолчанию `true`).
-- `concurrency`: число параллельных workers экспорта (`>= 1`, по умолчанию `1`).
+- `data_format`: `binary` (default) or `csv`.
+- `compression`: currently `zstd`.
+- `consistent_snapshot`: use a single consistent database snapshot; defaults to `true`.
+- `concurrency`: number of concurrent export workers; defaults to `1`.
 
-### Подключение (`[connection]`) — опционально
+### Objects
 
-Позволяет задать или переопределить параметры подключения к БД в самом конфиге.
-Поддерживает ссылки на переменные окружения через `{VAR_NAME}`.
-Приоритет: CLI-флаги > `[connection]` > `.pgpass`/переменные окружения.
+- `select` identifies the source object and optionally selects columns, filters, ordering, and a row limit.
+- `target_schema` and `target_name` rename the imported object. Set either both or neither.
+- `export_as` is `table` by default. Use `view` to preserve a source view and automatically export its dependencies as tables.
 
-```toml
-[connection]
-host = "{MY_PGHOST}"
-port = "{MY_PGPORT}"
-dbname = "myapp"
-user = "app_user"
-password = "{MY_PGPASSWORD}"
+Supported `select` forms include:
+
+```sql
+select * from schema.object
+select col1, col2 from schema.object
+select * except (col1, col2) from schema.object
+select ... from schema.object where ... order by ... limit 100
 ```
 
-### Объекты (`[[objects]]`)
+The selector operates on one `schema.object`; joins and grouping are not supported. Clauses must appear in `WHERE`, `ORDER BY`, `LIMIT` order. For `export_as = "view"`, use exactly `select * from schema.object`.
 
-- `select`: строка ограниченного `select` DSL (см. ниже).
-- `target_schema` и `target_name`: опционально переопределяют имя целевого объекта.
-  Если задаете — задавайте **оба** поля, иначе конфиг не пройдет валидацию.
-  Если не заданы — используются `schema/name` источника.
-- `export_as`: `table` (по умолчанию) или `view`.
-  - `table`: текущий режим snapshot/materialize (`SELECT -> CREATE TABLE + COPY`).
-  - `view`: в bundle сохраняется `CREATE VIEW`, а зависимости этой view автоматически добавляются в экспорт как таблицы.
-    Для `export_as = "view"` разрешен только вид `select * from schema.object` (без `WHERE/ORDER BY/LIMIT`).
+## Compatibility notes
 
-### `select` DSL
+- Binary bundles require the source and destination to use the same PostgreSQL major version. Use `data_format = "csv"` when moving between major versions.
+- Import bundles containing preserved views with `--concurrency 1`, so their dependencies are created in order.
+- `replace` is atomic per object: a failed object import is rolled back.
 
-Поддерживаемые формы:
+## Bundle encryption
 
-- `select * from schema.object`
-- `select col1, col2 from schema.object`
-- `select * except (col1, col2) from schema.object`
-- `select ... from schema.object where <predicate>`
-- `select ... from schema.object order by <expr>`
-- `select ... from schema.object limit <N>`
-- комбинация в порядке: `where ... order by ... limit ...`
-
-Ограничения:
-
-- только один источник `schema.object`;
-- без `JOIN/GROUP BY`;
-- идентификаторы в `FROM/SELECT/EXCEPT` можно указывать:
-  - unquoted (`schema.object`, `col_name`) — автоматически нормализуются в lower-case;
-  - quoted (`"123schema"."Orders"`, `"Col Name"`) — сохраняются как есть;
-- `WHERE/ORDER BY` вставляются в нормализованный SQL как есть;
-- `LIMIT` поддерживается как неотрицательное целое число;
-- клаузa должна идти в порядке `WHERE -> ORDER BY -> LIMIT`;
-- `;` в DSL запрещен.
-
-### Совместимость и нюансы
-
-- Для `data_format = "binary"` проверка совместимости `COPY` требует одинаковую **мажорную** версию PostgreSQL между
-  source и target.
-- Для `data_format = "csv"` проверка по major-версии PostgreSQL не применяется.
-- Для колонок с `DEFAULT nextval(...::regclass)` создается target-local sequence, и после импорта sequence
-  синхронизируется с `MAX(column)` загруженных данных.
-- Для bundle, содержащих объекты с `export_as = "view"`, импорт нужно запускать с `--concurrency 1`.
-- `export` поддерживает параллелизм через `--concurrency` (алиас `--concurency`) и разрешает значение так:
-  `CLI > general.concurrency из TOML > PGCOPY_CONCURRENCY > 1`.
-- Для `import` параллелизм задается CLI-флагом `--concurrency` (по умолчанию `1`).
-
-Пример с CSV:
-
-```toml
-[general]
-data_format = "csv"
-compression = "zstd"
-consistent_snapshot = true
-concurrency = 2
-```
-
-## Типовой workflow
-
-Экспорт:
+Pass a bundle password directly or through the `PASSWORD` environment variable:
 
 ```bash
-pgcopy export --config ./config.toml --out ./bundle.tar.zst
+pgcopy export --config ./config.toml --out ./bundle.age --password 'strong-passphrase'
+pgcopy import --in ./bundle.age --password 'strong-passphrase'
 ```
 
-Импорт:
-
-```bash
-pgcopy import --in ./bundle.tar.zst --mode replace
-```
-
-Параллельный режим:
-
-```toml
-[general]
-concurrency = 4
-```
-
-```bash
-pgcopy export --config ./config.toml --out ./bundle.tar.zst --concurrency 4
-pgcopy import --in ./bundle.tar.zst --mode replace --concurrency 4
-```
-
-## Сборка проекта
-
-```bash
-cargo build --release
-```
-
-Бинарник:
-
-```bash
-./target/release/pgcopy --help
-```
+Without a password, bundles are written unencrypted. An encrypted bundle requires the same password for `import` and `info`.
