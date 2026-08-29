@@ -15,6 +15,16 @@ By default, source objects are materialized as regular tables at the destination
 - Encrypt bundles with a passphrase.
 - Inspect bundle metadata without connecting to PostgreSQL.
 
+## Demo
+
+### Export
+
+![Export demo](images/export.gif "Export")
+
+### Import
+
+![Import demo](images/import.gif "Import")
+
 ## Installation
 
 ### Prebuilt binaries
@@ -98,10 +108,6 @@ export PGDATABASE=app_copy
 
 pgcopy import --in ./bundle.tar.zst --mode replace
 ```
-
-![Export demo](images/export.gif "Export")
-
-![Import demo](images/import.gif "Import")
 
 ## Commands
 
