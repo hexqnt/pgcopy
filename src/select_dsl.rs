@@ -87,7 +87,7 @@ impl SelectDsl {
     }
 
     /// Возвращает тип проекции в виде стабильного кода.
-    pub fn projection_kind(&self) -> ProjectionKind {
+    pub const fn projection_kind(&self) -> ProjectionKind {
         match self.projection {
             ColumnProjection::All => ProjectionKind::All,
             ColumnProjection::ColumnsList(_) => ProjectionKind::ColumnsList,

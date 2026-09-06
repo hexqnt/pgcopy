@@ -16,21 +16,21 @@ pub(crate) struct WorkerOutcome<TTask, TResult> {
 }
 
 impl<TTask, TResult> WorkerOutcome<TTask, TResult> {
-    pub(crate) fn empty() -> Self {
+    pub(crate) const fn empty() -> Self {
         Self {
             completed: Vec::new(),
             failure: None,
         }
     }
 
-    pub(crate) fn success(completed: Vec<(usize, TResult)>) -> Self {
+    pub(crate) const fn success(completed: Vec<(usize, TResult)>) -> Self {
         Self {
             completed,
             failure: None,
         }
     }
 
-    pub(crate) fn with_failure(
+    pub(crate) const fn with_failure(
         completed: Vec<(usize, TResult)>,
         task: TTask,
         error: anyhow::Error,

@@ -209,7 +209,7 @@ struct RawObject {
     export_as: ExportAs,
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -219,7 +219,7 @@ fn default_true() -> bool {
 /// Если после интерполяции результат пуст — возвращается `None`.
 fn interpolate_env(value: &str) -> Result<Option<String>> {
     let mut result = String::with_capacity(value.len());
-    let mut chars = value.chars().peekable();
+    let mut chars = value.chars();
 
     while let Some(ch) = chars.next() {
         if ch == '{' {
@@ -248,7 +248,7 @@ fn interpolate_env(value: &str) -> Result<Option<String>> {
     }
 }
 
-fn default_data_format() -> DataFormat {
+const fn default_data_format() -> DataFormat {
     DataFormat::Binary
 }
 
@@ -375,6 +375,7 @@ fn validate_view_export_select(
 #[cfg(test)]
 mod tests {
     use std::io::Write;
+    use std::num::NonZeroU16;
 
     use super::{ExportAs, load};
 
@@ -479,7 +480,7 @@ mod tests {
             .connection
             .expect("connection section must be present");
         assert_eq!(conn.host.as_deref(), Some("db.example.com"));
-        assert_eq!(conn.port.map(|p| p.get()), Some(5433));
+        assert_eq!(conn.port.map(NonZeroU16::get), Some(5433));
         assert_eq!(conn.dbname.as_deref(), Some("mydb"));
         assert_eq!(conn.user.as_deref(), Some("myuser"));
         assert_eq!(conn.password.as_deref(), Some("secret"));
@@ -530,7 +531,7 @@ mod tests {
         let conn = config
             .connection
             .expect("connection section must be present");
-        assert_eq!(conn.port.map(|p| p.get()), Some(9876));
+        assert_eq!(conn.port.map(NonZeroU16::get), Some(9876));
         unsafe { std::env::remove_var("PGCOPY_TEST_PORT") };
     }
 
@@ -625,7 +626,7 @@ mod tests {
         let conn = config
             .connection
             .expect("connection section must be present");
-        assert_eq!(conn.port.map(|p| p.get()), Some(6543));
+        assert_eq!(conn.port.map(NonZeroU16::get), Some(6543));
         unsafe { std::env::remove_var("PGCOPY_TEST_PORT_STR") };
     }
 

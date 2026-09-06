@@ -18,7 +18,7 @@ struct PgPassEntry {
 
 impl PgPassEntry {
     fn parse(line: &str) -> Option<Self> {
-        let [host, port, dbname, user, password] = parse_line(line).try_into().ok()?;
+        let [host, port, dbname, user, password] = parse_line(line)?;
 
         Some(Self {
             host,
@@ -100,47 +100,20 @@ fn file_path() -> Option<PathBuf> {
 }
 
 /// Разбирает строку `.pgpass` на поля с учётом escape-последовательностей.
-fn parse_line(line: &str) -> Vec<String> {
-    let mut fields = Vec::with_capacity(5);
-    let mut current = String::new();
-    let mut chars = line.chars().peekable();
+fn parse_line(line: &str) -> Option<[String; 5]> {
+    let mut fields = std::array::from_fn(|_| String::new());
+    let mut field_index = 0;
+    let mut chars = line.chars();
 
     while let Some(ch) = chars.next() {
         match ch {
-            '\\' => {
-                if let Some(&next) = chars.peek() {
-                    current.push(next);
-                    chars.next();
-                } else {
-                    current.push('\\');
-                }
-            }
-            ':' => {
-                fields.push(std::mem::take(&mut current));
-                if fields.len() == 4 {
-                    // Всё оставшееся — пароль (может содержать `:` и escape).
-                    let mut rest = String::new();
-                    while let Some(ch) = chars.next() {
-                        if ch == '\\' {
-                            if let Some(&next) = chars.peek() {
-                                rest.push(next);
-                                chars.next();
-                            } else {
-                                rest.push('\\');
-                            }
-                        } else {
-                            rest.push(ch);
-                        }
-                    }
-                    fields.push(rest);
-                    return fields;
-                }
-            }
-            _ => current.push(ch),
+            '\\' => fields[field_index].push(chars.next().unwrap_or('\\')),
+            ':' if field_index < fields.len() - 1 => field_index += 1,
+            _ => fields[field_index].push(ch),
         }
     }
-    fields.push(current);
-    fields
+
+    (field_index == fields.len() - 1).then_some(fields)
 }
 
 /// Проверяет совпадение поля `.pgpass` с реальным значением.
@@ -153,45 +126,63 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_basic_line() {
-        let fields = parse_line("localhost:5432:mydb:myuser:mypass");
+    fn rejects_incomplete_entries() {
+        for line in [
+            "",
+            "host",
+            "host:5432:db:user",
+            r"host:5432:db:user\:password",
+        ] {
+            assert!(parse_line(line).is_none(), "unexpected entry: {line}");
+        }
+    }
+
+    #[test]
+    fn preserves_password_colons_and_trailing_backslash() {
+        let fields = parse_line("host:5432:db:user:pass:word\\")
+            .expect("must parse password containing a colon and trailing backslash");
+        assert_eq!(fields[4], "pass:word\\");
         assert_eq!(
-            fields,
-            vec!["localhost", "5432", "mydb", "myuser", "mypass"]
+            parse_line("::::"),
+            Some(std::array::from_fn(|_| String::new()))
         );
+    }
+
+    #[test]
+    fn parse_basic_line() {
+        let fields =
+            parse_line("localhost:5432:mydb:myuser:mypass").expect("must parse five fields");
+        assert_eq!(fields, ["localhost", "5432", "mydb", "myuser", "mypass"]);
     }
 
     #[test]
     fn parse_with_wildcards() {
-        let fields = parse_line("*:*:*:*:secret");
-        assert_eq!(fields, vec!["*", "*", "*", "*", "secret"]);
+        let fields = parse_line("*:*:*:*:secret").expect("must parse five fields");
+        assert_eq!(fields, ["*", "*", "*", "*", "secret"]);
     }
 
     #[test]
     fn parse_with_escaped_colon_in_password() {
-        let fields = parse_line(r"localhost:5432:mydb:myuser:pass\:word");
-        assert_eq!(
-            fields,
-            vec!["localhost", "5432", "mydb", "myuser", "pass:word"]
-        );
+        let fields =
+            parse_line(r"localhost:5432:mydb:myuser:pass\:word").expect("must parse five fields");
+        assert_eq!(fields, ["localhost", "5432", "mydb", "myuser", "pass:word"]);
     }
 
     #[test]
     fn parse_with_escaped_backslash() {
-        let fields = parse_line(r"localhost:5432:mydb:myuser:pass\\word");
+        let fields =
+            parse_line(r"localhost:5432:mydb:myuser:pass\\word").expect("must parse five fields");
         assert_eq!(
             fields,
-            vec!["localhost", "5432", "mydb", "myuser", r"pass\word"]
+            ["localhost", "5432", "mydb", "myuser", r"pass\word"]
         );
     }
 
     #[test]
     fn parse_with_escaped_colon_in_host() {
-        let fields = parse_line(r"host\:name:5432:mydb:myuser:secret");
-        assert_eq!(
-            fields,
-            vec!["host:name", "5432", "mydb", "myuser", "secret"]
-        );
+        let fields =
+            parse_line(r"host\:name:5432:mydb:myuser:secret").expect("must parse five fields");
+        assert_eq!(fields, ["host:name", "5432", "mydb", "myuser", "secret"]);
     }
 
     #[test]

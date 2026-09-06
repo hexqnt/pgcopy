@@ -103,41 +103,30 @@ pub(super) fn parse_identifier_list(input: &str) -> Result<Vec<String>> {
 }
 
 fn parse_identifier_at_start(input: &str) -> Result<(String, usize)> {
-    let trimmed = input.trim_start();
-    let leading_ws = input.len() - trimmed.len();
-    let first = trimmed
-        .chars()
-        .next()
-        .with_context(|| "identifier is missing".to_owned())?;
-
-    if first == '"' {
-        let (identifier, consumed) = parse_quoted_identifier(trimmed)?;
-        return Ok((identifier, leading_ws + consumed));
-    }
-
-    parse_unquoted_identifier(trimmed)
-        .map(|(identifier, consumed)| (identifier, leading_ws + consumed))
+    parse_identifier_with_start(input, is_unquoted_identifier_start, "[A-Za-z_]")
 }
 
 fn parse_relation_identifier_at_start(input: &str) -> Result<(String, usize)> {
+    parse_identifier_with_start(input, is_unquoted_identifier_char, "[A-Za-z0-9_]")
+}
+
+fn parse_identifier_with_start(
+    input: &str,
+    is_start: fn(char) -> bool,
+    start_hint: &str,
+) -> Result<(String, usize)> {
     let trimmed = input.trim_start();
     let leading_ws = input.len() - trimmed.len();
-    let first = trimmed
-        .chars()
-        .next()
-        .with_context(|| "identifier is missing".to_owned())?;
-
-    if first == '"' {
-        let (identifier, consumed) = parse_quoted_identifier(trimmed)?;
-        return Ok((identifier, leading_ws + consumed));
-    }
-
-    parse_unquoted_relation_identifier(trimmed)
-        .map(|(identifier, consumed)| (identifier, leading_ws + consumed))
+    let (identifier, consumed) = if trimmed.starts_with('"') {
+        parse_quoted_identifier(trimmed)?
+    } else {
+        parse_unquoted_identifier_with_start(trimmed, is_start, start_hint)?
+    };
+    Ok((identifier, leading_ws + consumed))
 }
 
 fn parse_quoted_identifier(input: &str) -> Result<(String, usize)> {
-    let mut chars = input.char_indices();
+    let mut chars = input.char_indices().peekable();
     let Some((_, first)) = chars.next() else {
         bail!("quoted identifier is empty");
     };
@@ -148,9 +137,7 @@ fn parse_quoted_identifier(input: &str) -> Result<(String, usize)> {
     let mut value = String::new();
     while let Some((index, ch)) = chars.next() {
         if ch == '"' {
-            if let Some((_, next)) = chars.clone().next()
-                && next == '"'
-            {
+            if chars.peek().is_some_and(|(_, next)| *next == '"') {
                 // PostgreSQL escaping внутри quoted identifier: "" => "
                 value.push('"');
                 chars.next();
@@ -167,18 +154,6 @@ fn parse_quoted_identifier(input: &str) -> Result<(String, usize)> {
     }
 
     bail!("unterminated quoted identifier")
-}
-
-fn parse_unquoted_identifier(input: &str) -> Result<(String, usize)> {
-    parse_unquoted_identifier_with_start(input, is_unquoted_identifier_start, "[A-Za-z_]")
-}
-
-fn parse_unquoted_relation_identifier(input: &str) -> Result<(String, usize)> {
-    parse_unquoted_identifier_with_start(
-        input,
-        is_unquoted_relation_identifier_start,
-        "[A-Za-z0-9_]",
-    )
 }
 
 fn parse_unquoted_identifier_with_start(
@@ -211,14 +186,10 @@ fn parse_unquoted_identifier_with_start(
     Ok((input[..consumed].to_ascii_lowercase(), consumed))
 }
 
-fn is_unquoted_identifier_start(ch: char) -> bool {
+const fn is_unquoted_identifier_start(ch: char) -> bool {
     ch.is_ascii_alphabetic() || ch == '_'
 }
 
-fn is_unquoted_relation_identifier_start(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '_'
-}
-
-fn is_unquoted_identifier_char(ch: char) -> bool {
+const fn is_unquoted_identifier_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }

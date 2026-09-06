@@ -226,4 +226,3 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
 
     Ok(())
 }
-

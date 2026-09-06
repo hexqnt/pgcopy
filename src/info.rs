@@ -133,4 +133,3 @@ fn print_json(
     println!("{json}");
     Ok(())
 }
-

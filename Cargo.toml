@@ -4,7 +4,6 @@ version = "0.1.8"
 edition = "2024"
 description = "CLI tool to export selected PostgreSQL objects into a bundle and import them into another database."
 authors = ["hexqnt <hexqntlab@gmail.com>"]
-readme = "README.md"
 license = "MIT OR Apache-2.0"
 keywords = ["postgresql", "migration", "backup", "cli", "copy"]
 categories = ["command-line-utilities", "database"]
@@ -17,7 +16,7 @@ bytes = "1.12.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.6", features = ["derive"] }
 futures-util = "0.3.34"
-indicatif = "0.18.3"
+indicatif = "0.18.6"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tar = "0.4.46"
@@ -29,10 +28,13 @@ tokio = { version = "1.53.1", features = [
     "io-util",
 ] }
 tokio-postgres = "0.7.18"
-toml = "1.1.4"
-tracing = "0.1.41"
+toml = "1.1.5"
+tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
-zstd = "0.13.3"
+zstd = "0.14.0"
+
+[lints]
+workspace = true
 
 [profile.release]
 strip = true
@@ -48,7 +50,15 @@ debug = 1
 strip = "none"
 
 [workspace.lints.clippy]
-all = "warn"
-pedantic = "warn"
-nursery = "warn"
-cargo = "warn"
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# Эти lint-ы дают шум для бинарного crate и стороннего dependency graph.
+multiple_crate_versions = "allow"
+redundant_pub_crate = "allow"
+future_not_send = "allow"
+too_many_lines = "allow"
+unused_async = "allow"
+unused_async_trait_impl = "allow"
+struct_field_names = "allow"

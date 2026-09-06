@@ -77,7 +77,7 @@ pub(super) struct ReaderChunkSource<'a, R: Read> {
 }
 
 impl<'a, R: Read> ReaderChunkSource<'a, R> {
-    pub(super) fn new(reader: &'a mut R) -> Self {
+    pub(super) const fn new(reader: &'a mut R) -> Self {
         Self { reader }
     }
 }

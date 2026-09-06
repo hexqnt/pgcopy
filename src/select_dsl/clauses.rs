@@ -271,4 +271,3 @@ fn has_keyword_at(input: &str, index: usize, keyword: &str) -> bool {
 const fn is_word_char(ch: u8) -> bool {
     ch.is_ascii_alphanumeric() || ch == b'_'
 }
-

@@ -157,4 +157,3 @@ async fn import_objects_layout_v2<R: Read>(
 
     Ok(total_rows)
 }
-

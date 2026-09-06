@@ -33,7 +33,7 @@ pub fn validate_target_collisions(objects: &[ManifestObject]) -> Result<()> {
     Ok(())
 }
 
-fn data_file_suffix(data_format: DataFormat) -> &'static str {
+const fn data_file_suffix(data_format: DataFormat) -> &'static str {
     match data_format {
         DataFormat::Binary => "copybin",
         DataFormat::Csv => "copycsv",

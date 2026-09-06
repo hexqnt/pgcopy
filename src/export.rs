@@ -38,7 +38,7 @@ struct SeenSource {
 }
 
 impl SeenSource {
-    fn auto_dependency(required_by_view_index: usize) -> Self {
+    const fn auto_dependency(required_by_view_index: usize) -> Self {
         Self {
             config_index: None,
             is_auto_dependency: true,
@@ -465,7 +465,7 @@ mod tests {
     fn dependency_compatibility_accepts_full_table_default() {
         let object = object_config("select * from public.orders", ExportAs::Table);
         let issues = dependency_compatibility_issues(&object);
-        assert!(issues.is_empty());
+        assert_eq!(issues, [] as [&str; 0]);
     }
 
     #[test]

@@ -38,16 +38,48 @@ impl fmt::Display for Identifier {
 pub fn is_valid_identifier(value: &str) -> bool {
     !value.is_empty()
         && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 /// Экранирует PostgreSQL-идентификатор двойными кавычками.
 pub fn quote_ident(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
+    let mut quoted = String::with_capacity(value.len() + 2);
+    push_quoted_ident(&mut quoted, value);
+    quoted
 }
 
 /// Формирует fully-qualified имя `schema.name` c корректным quoting.
 pub fn quoted_fq_name(schema: &str, name: &str) -> String {
-    format!("{}.{}", quote_ident(schema), quote_ident(name))
+    let mut quoted = String::with_capacity(schema.len() + name.len() + 5);
+    push_quoted_ident(&mut quoted, schema);
+    quoted.push('.');
+    push_quoted_ident(&mut quoted, name);
+    quoted
+}
+
+fn push_quoted_ident(output: &mut String, value: &str) {
+    output.push('"');
+    for part in value.split_inclusive('"') {
+        output.push_str(part);
+        if part.ends_with('"') {
+            output.push('"');
+        }
+    }
+    output.push('"');
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{quote_ident, quoted_fq_name};
+
+    #[test]
+    fn quotes_identifiers_with_embedded_quotes_and_unicode() {
+        assert_eq!(quote_ident(""), "\"\"");
+        assert_eq!(quote_ident("a\"\"б\""), "\"a\"\"\"\"б\"\"\"");
+        assert_eq!(
+            quoted_fq_name("схема\"", "имя.таблицы"),
+            "\"схема\"\"\".\"имя.таблицы\""
+        );
+    }
 }

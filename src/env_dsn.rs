@@ -148,7 +148,7 @@ fn resolve_port_3(cli: Option<NonZeroU16>, toml: Option<NonZeroU16>) -> Result<N
     })
 }
 
-fn default_port() -> NonZeroU16 {
+const fn default_port() -> NonZeroU16 {
     NonZeroU16::new(5432).expect("default PostgreSQL port must be non-zero")
 }
 
