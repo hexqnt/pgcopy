@@ -2,18 +2,18 @@
 
 [🇺🇸 English](./README.md) · [🇷🇺 Русский](./README.ru.md)
 
-`pgcopy` is a command-line tool for moving selected PostgreSQL tables, views, and materialized views between databases. It exports their schema and data into a single compressed bundle, then imports the bundle into another database.
+`pgcopy` is a command-line tool for moving selected PostgreSQL tables, views, and materialized views between databases. It can also describe the source schema (DDL) as compact context for writing SQL with an AI chat assistant when direct database access is unavailable.
 
-By default, source objects are materialized as regular tables at the destination. A view can also be preserved with `export_as = "view"`.
+By default, source objects become regular tables at the destination. A view can instead be preserved as a view with `export_as = "view"`.
 
 ## Features
 
-- Export multiple PostgreSQL objects into one `tar.zst` bundle.
-- Import with `replace` or `append` semantics, or create schema only with `--ddl-only`.
-- Select columns and rows with a compact SQL-like configuration.
-- Process independent objects concurrently.
-- Encrypt bundles with a passphrase.
+- Export multiple PostgreSQL objects (tables, views, and more) into one `tar.zst` bundle.
+- Import bundle data in `replace` or `append` mode, or create only the schema with `--ddl-only`.
+- Export only selected columns and rows using a compact SQL-like configuration.
+- Encrypt bundles with a password.
 - Inspect bundle metadata without connecting to PostgreSQL.
+- Generate Markdown, SQL, or JSON schema context for an AI chat assistant.
 
 ## Demo
 
@@ -38,7 +38,7 @@ Download the archive for your platform from [GitHub Releases](https://github.com
 | Windows x86-64                   | `x86_64-pc-windows-msvc.zip`       |
 | macOS Apple Silicon              | `aarch64-apple-darwin.tar.gz`      |
 
-On Linux or macOS, extract the archive, rename the versioned executable, and place it on your `PATH`:
+On Linux or macOS, extract the archive and install the executable on your `PATH`:
 
 ```bash
 tar -xzf pgcopy-vX.Y.Z-<target>.tar.gz
@@ -47,9 +47,9 @@ install -m 755 pgcopy-vX.Y.Z-<target> ~/.local/bin/pgcopy
 pgcopy --help
 ```
 
-Replace `vX.Y.Z` and `<target>` with the values from the downloaded filename. Make sure `~/.local/bin` is on your `PATH`.
+Replace `vX.Y.Z` and `<target>` with values from the downloaded filename, and ensure `~/.local/bin` is on your `PATH`.
 
-On Windows, extract the ZIP archive and either run the executable directly or rename it to `pgcopy.exe` and move it into a directory on `PATH`:
+On Windows, extract the ZIP and run the executable directly or rename it to `pgcopy.exe`:
 
 ```powershell
 Expand-Archive -Path .\pgcopy-vX.Y.Z-x86_64-pc-windows-msvc.zip -DestinationPath .\pgcopy
@@ -68,7 +68,7 @@ cargo install --locked --path .
 pgcopy --help
 ```
 
-Cargo installs the executable into `~/.cargo/bin` by default; this directory normally needs to be on your `PATH`.
+Cargo installs into `~/.cargo/bin` by default; ensure it is on your `PATH`.
 
 ## Quick start
 
@@ -88,7 +88,7 @@ target_schema = "archive"
 target_name = "paid_invoices"
 ```
 
-Set the standard PostgreSQL connection variables for the source database and export the bundle:
+Set the PostgreSQL connection variables for the source database and export the bundle:
 
 ```bash
 export PGHOST=source.example.com
@@ -115,6 +115,7 @@ pgcopy import --in ./bundle.tar.zst --mode replace
 pgcopy export --config <config.toml> --out <bundle> [options]
 pgcopy import --in <bundle> [options]
 pgcopy info --in <bundle> [options]
+pgcopy describe --config <config.toml> [options]
 ```
 
 Run `pgcopy --help` or `pgcopy <command> --help` for the complete CLI reference.
@@ -144,11 +145,35 @@ pgcopy info --in ./bundle.tar.zst --objects
 pgcopy info --in ./bundle.tar.zst --format json
 ```
 
+### `describe`
+
+Describes each unique source relation named by the config for use with an AI assistant. The complete relation is always described; projections, `WHERE`/`ORDER BY`/`LIMIT`, `target_schema`, and `target_name` are ignored.
+
+```bash
+pgcopy describe --config ./config.toml > schema-context.md
+pgcopy describe --config ./config.toml --format sql --out schema-context.sql
+pgcopy describe --config ./config.toml --format json --out schema-context.json
+```
+
+Markdown output includes the PostgreSQL version, ordered columns, types, nullability, defaults, identity/generated columns, constraints, enum values, database comments, view definitions, and warnings about foreign keys to objects outside the config. Use `--no-comments` to omit database comments, which are untrusted text.
+
+Existing planner statistics can be included without reading table rows or changing the database:
+
+```bash
+pgcopy describe --config ./config.toml --statistics
+pgcopy describe --config ./config.toml --statistics=5
+pgcopy describe --config ./config.toml --statistics 5
+```
+
+Statistics may be approximate or stale. The optional number limits common values per column; this is explicit because those values may be sensitive. The command never runs `ANALYZE`.
+
+After built-in rendering, `pgcopy` tries formatters from `PATH`: `markdownlint-cli2`/`markdownlint`/`prettier` for Markdown, `pg_format`/`sqlfluff` for SQL, and `biome`/`prettier`/`jq` for JSON. It stages input beside the output so local formatter configuration is found. If every formatter fails, it keeps the deterministic built-in output and warns on stderr. Use `--no-format` to disable external formatting and its warnings.
+
 Global options include `--dry-run`, `--quiet`, and `--no-progress`.
 
 ## PostgreSQL connection
 
-The `export` and `import` commands accept these connection options:
+The `describe`, `export`, and `import` commands accept these connection options:
 
 - `--host`
 - `--port`
@@ -156,9 +181,9 @@ The `export` and `import` commands accept these connection options:
 - `--username` (alias: `--user`)
 - `--pgpassword`
 
-The standard `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and `PGPASSWORD` environment variables are also supported. CLI values take precedence over configuration-file values, which take precedence over environment variables and defaults. When no explicit password is provided, `pgcopy` also checks the standard `.pgpass` file.
+The standard `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and `PGPASSWORD` variables are supported. Precedence is CLI, configuration file, environment, then defaults. Without an explicit password, `pgcopy` also checks `.pgpass`.
 
-For `export`, connection settings may be stored in `config.toml`. Values can reference environment variables as `{VARIABLE}`:
+For `describe` and `export`, connection settings may be stored in `config.toml`. Values can reference environment variables as `{VARIABLE}`:
 
 ```toml
 [connection]

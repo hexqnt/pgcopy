@@ -4,13 +4,13 @@ use std::path::Path;
 
 use tokio_postgres::{Config as PgConfig, config::Host};
 
-use crate::{importer, info};
+use crate::{describe, importer, info};
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub(crate) fn print_startup_banner() -> bool {
     let title = format!("pgcopy v{APP_VERSION}");
-    let subtitle = "PostgreSQL bundle export/import";
+    let subtitle = "PostgreSQL transfer and schema context";
     let color = stderr_supports_color();
 
     if color {
@@ -40,6 +40,28 @@ pub(crate) fn print_export_startup_details(
     print_startup_detail("source_db", format_pg_connection(source_config), color);
     print_startup_detail("config", config_path.display(), color);
     print_startup_detail("out", out_path.display(), color);
+}
+
+pub(crate) fn print_describe_startup_details(
+    config_path: &Path,
+    out_path: Option<&Path>,
+    format: describe::OutputFormat,
+    statistics: describe::StatisticsMode,
+    formatting: describe::FormattingMode,
+    source_config: &PgConfig,
+    color: bool,
+) {
+    print_startup_detail("command", "describe", color);
+    print_startup_detail("source_db", format_pg_connection(source_config), color);
+    print_startup_detail("config", config_path.display(), color);
+    print_startup_detail(
+        "out",
+        out_path.map_or_else(|| "stdout".to_owned(), |path| path.display().to_string()),
+        color,
+    );
+    print_startup_detail("format", format, color);
+    print_startup_detail("statistics", statistics, color);
+    print_startup_detail("formatter", formatting, color);
 }
 
 pub(crate) fn print_import_startup_details(

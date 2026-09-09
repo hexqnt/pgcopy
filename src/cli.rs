@@ -3,10 +3,56 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::{env_dsn, importer, info};
+use crate::{describe, env_dsn, importer, info};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Commands {
+    #[command(
+        about = "Describe selected source objects for an AI chat",
+        long_about = "Reads PostgreSQL schema metadata for the unique source objects selected by the config.\n\
+The output contains no table rows and is intended to be used as context when writing SQL."
+    )]
+    #[command(after_help = "Examples:\n\
+  pgcopy describe --config ./config.toml > schema-context.md\n\
+  pgcopy describe --config ./config.toml --format json --out schema-context.json\n\
+  pgcopy describe --config ./config.toml --statistics=5")]
+    Describe {
+        #[arg(
+            long,
+            value_name = "CONFIG_TOML",
+            help = "Path to configuration file (the source objects from each select are used)"
+        )]
+        config: PathBuf,
+        #[arg(long, value_name = "FILE", help = "Output file (stdout when omitted)")]
+        out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "FORMAT",
+            default_value = "markdown",
+            help = "Schema context output format"
+        )]
+        format: describe::OutputFormat,
+        #[arg(
+            long,
+            value_name = "TOP_VALUES",
+            num_args = 0..=1,
+            default_missing_value = "basic",
+            help = "Include planner statistics; optionally include at most TOP_VALUES common values per column"
+        )]
+        statistics: Option<describe::StatisticsSelection>,
+        #[arg(
+            long,
+            help = "Do not read or include database comments (comments are untrusted text)"
+        )]
+        no_comments: bool,
+        #[arg(
+            long = "no-format",
+            help = "Disable external formatting and all formatter-related warnings"
+        )]
+        no_format: bool,
+        #[command(flatten)]
+        connection: PgConnectionArgs,
+    },
     #[command(
         about = "Export selected source objects into one bundle",
         long_about = "Reads config TOML, extracts DDL + data from the source PostgreSQL database,\n\
@@ -131,15 +177,15 @@ DDL only:\n\
 }
 #[derive(Debug, Parser)]
 #[command(name = "pgcopy")]
-#[command(about = "Export/import selected PostgreSQL objects into a single bundle file")]
+#[command(about = "Export/import or describe selected PostgreSQL objects")]
 #[command(
-    long_about = "pgcopy exports selected PostgreSQL tables/materialized views/views into one compressed bundle \
-and imports that bundle into another PostgreSQL database."
+    long_about = "pgcopy exports selected PostgreSQL tables/materialized views/views into one compressed bundle, \
+imports that bundle into another database, or describes source objects as AI-friendly schema context."
 )]
 #[command(
     after_help = "Connection parameters can be provided via CLI flags or PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD.\n\
 Bundle encryption password can be provided via --password or environment variable PASSWORD.\n\n\
-Run `pgcopy export --help`, `pgcopy import --help`, or `pgcopy info --help` for command-specific examples."
+Run `pgcopy describe --help`, `pgcopy export --help`, `pgcopy import --help`, or `pgcopy info --help` for command-specific examples."
 )]
 pub(crate) struct Cli {
     #[arg(
@@ -203,6 +249,111 @@ impl PgConnectionArgs {
             dbname: self.dbname,
             user: self.username,
             password: self.pgpassword,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use clap::Parser;
+
+    use super::{Cli, Commands};
+    use crate::describe;
+
+    fn describe_options(args: &[&str]) -> (bool, Option<describe::StatisticsSelection>) {
+        let cli = Cli::try_parse_from(args).expect("describe arguments must parse");
+        match cli.command {
+            Commands::Describe {
+                no_format,
+                statistics,
+                ..
+            } => (no_format, statistics),
+            _ => panic!("expected describe command"),
+        }
+    }
+
+    #[test]
+    fn describe_enables_formatting_by_default() {
+        let (no_format, statistics) =
+            describe_options(&["pgcopy", "describe", "--config", "config.toml"]);
+        assert!(!no_format);
+        assert!(statistics.is_none());
+    }
+
+    #[test]
+    fn describe_no_format_is_explicit() {
+        assert!(
+            describe_options(&[
+                "pgcopy",
+                "describe",
+                "--config",
+                "config.toml",
+                "--no-format",
+            ])
+            .0
+        );
+    }
+
+    #[test]
+    fn describe_statistics_is_an_optional_flag() {
+        let (_, statistics) = describe_options(&[
+            "pgcopy",
+            "describe",
+            "--config",
+            "config.toml",
+            "--statistics",
+        ]);
+        assert_eq!(statistics, Some(describe::StatisticsSelection::Basic));
+    }
+
+    #[test]
+    fn describe_statistics_accepts_equals_value() {
+        let (_, statistics) = describe_options(&[
+            "pgcopy",
+            "describe",
+            "--config",
+            "config.toml",
+            "--statistics=5",
+        ]);
+        assert_eq!(
+            describe::StatisticsMode::from(statistics).top_values(),
+            NonZeroUsize::new(5)
+        );
+    }
+
+    #[test]
+    fn describe_statistics_accepts_separate_value() {
+        let (_, statistics) = describe_options(&[
+            "pgcopy",
+            "describe",
+            "--config",
+            "config.toml",
+            "--statistics",
+            "5",
+        ]);
+        assert_eq!(
+            describe::StatisticsMode::from(statistics).top_values(),
+            NonZeroUsize::new(5)
+        );
+    }
+
+    #[test]
+    fn describe_statistics_rejects_invalid_limits() {
+        for value in ["0", "invalid"] {
+            let result = Cli::try_parse_from([
+                "pgcopy",
+                "describe",
+                "--config",
+                "config.toml",
+                "--statistics",
+                value,
+            ]);
+            assert!(
+                result.is_err(),
+                "statistics limit {value:?} must be rejected"
+            );
         }
     }
 }

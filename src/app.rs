@@ -6,7 +6,7 @@ use anyhow::Result;
 use crate::{
     bundle_io,
     cli::{Cli, Commands},
-    config, crypto, env_dsn, export, importer, info, startup,
+    config, crypto, describe, env_dsn, export, importer, info, startup,
 };
 
 fn init_tracing(quiet: bool) {
@@ -124,6 +124,70 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     init_tracing(cli.quiet);
 
     match cli.command {
+        Commands::Describe {
+            config: config_path,
+            out,
+            format,
+            statistics,
+            no_comments,
+            no_format,
+            connection,
+        } => {
+            let cfg = config::load(&config_path)?;
+            let statistics = describe::StatisticsMode::from(statistics);
+            let formatting = describe::FormattingMode::from_no_format(no_format);
+            let dsn_overrides = connection.into_overrides();
+            let source_config = env_dsn::build(&dsn_overrides, cfg.connection.as_ref())?;
+
+            if cli.dry_run {
+                startup::print_startup_detail("command", "describe (dry-run)", startup_color);
+                startup::print_startup_detail(
+                    "source_db",
+                    startup::format_pg_connection(&source_config),
+                    startup_color,
+                );
+                startup::print_startup_detail("config", config_path.display(), startup_color);
+                startup::print_startup_detail(
+                    "out",
+                    out.as_deref()
+                        .map_or_else(|| "stdout".to_owned(), |path| path.display().to_string()),
+                    startup_color,
+                );
+                startup::print_startup_detail("format", format, startup_color);
+                startup::print_startup_detail("statistics", statistics, startup_color);
+                startup::print_startup_detail("formatter", formatting, startup_color);
+                startup::print_startup_detail(
+                    "objects",
+                    describe::unique_source_count(&cfg),
+                    startup_color,
+                );
+                return Ok(());
+            }
+
+            if !cli.quiet {
+                startup::print_describe_startup_details(
+                    &config_path,
+                    out.as_deref(),
+                    format,
+                    statistics,
+                    formatting,
+                    &source_config,
+                    startup_color,
+                );
+            }
+            describe::run(
+                &cfg,
+                out.as_deref(),
+                describe::Options {
+                    output_format: format,
+                    statistics,
+                    include_comments: !no_comments,
+                    formatting,
+                },
+                &source_config,
+            )
+            .await?;
+        }
         Commands::Export {
             config: config_path,
             out,

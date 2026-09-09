@@ -6,6 +6,7 @@ mod bundle_io;
 mod cli;
 mod config;
 mod crypto;
+mod describe;
 mod env_dsn;
 mod export;
 mod importer;
