@@ -143,43 +143,94 @@ pub fn read_manifest_from_dir(root_dir: &Path) -> Result<Manifest> {
     manifest::parse_manifest(&manifest_raw, &manifest_path.display().to_string())
 }
 
-/// Собирает bundle из scratch-структуры и при необходимости шифрует его.
+/// Атомарно собирает bundle из scratch-структуры и при необходимости шифрует его.
 pub fn write_bundle(
     scratch_dir: &Path,
     out_path: &Path,
     manifest: &Manifest,
     password: Option<&crypto::BundlePassword>,
 ) -> Result<()> {
-    if let Some(parent) = out_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create output directory {}", parent.display()))?;
-    }
+    let output_dir = out_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(output_dir)
+        .with_context(|| format!("failed to create output directory {}", output_dir.display()))?;
 
     let manifest_path = scratch_dir.join("manifest.json");
     let manifest_json = serde_json::to_vec_pretty(manifest)?;
     std::fs::write(&manifest_path, manifest_json)
         .with_context(|| format!("failed to write {}", manifest_path.display()))?;
 
-    let output_file = std::fs::File::create(out_path)
-        .with_context(|| format!("failed to create bundle file {}", out_path.display()))?;
+    let mut output = tempfile::Builder::new()
+        .prefix(".pgcopy-")
+        .tempfile_in(output_dir)
+        .with_context(|| {
+            format!(
+                "failed to create temporary bundle file in {}",
+                output_dir.display()
+            )
+        })?;
 
-    if let Some(password) = password {
-        let encryptor =
-            age::Encryptor::with_user_passphrase(SecretString::from(password.as_str().to_owned()));
-        let encrypted_writer = encryptor
-            .wrap_output(output_file)
-            .context("failed to initialize age encryptor for bundle")?;
-        let encrypted_writer =
-            write_bundle_archive(encrypted_writer, scratch_dir, &manifest_path, manifest)?;
-        encrypted_writer
-            .finish()
-            .context("failed to finalize encrypted bundle stream")?;
-    } else {
-        write_bundle_archive(output_file, scratch_dir, &manifest_path, manifest)?;
-    }
+    write_bundle_stream(
+        output.as_file_mut(),
+        scratch_dir,
+        &manifest_path,
+        manifest,
+        password,
+    )?;
 
+    output.as_file().sync_all().with_context(|| {
+        format!(
+            "failed to synchronize temporary bundle for {}",
+            out_path.display()
+        )
+    })?;
+    output
+        .persist(out_path)
+        .with_context(|| format!("failed to publish bundle file {}", out_path.display()))?;
+    sync_output_dir(output_dir)?;
+
+    Ok(())
+}
+
+fn write_bundle_stream<W: Write>(
+    writer: W,
+    scratch_dir: &Path,
+    manifest_path: &Path,
+    manifest: &Manifest,
+    password: Option<&crypto::BundlePassword>,
+) -> Result<W> {
+    let Some(password) = password else {
+        return write_bundle_archive(writer, scratch_dir, manifest_path, manifest);
+    };
+
+    let encryptor =
+        age::Encryptor::with_user_passphrase(SecretString::from(password.as_str().to_owned()));
+    let encrypted_writer = encryptor
+        .wrap_output(writer)
+        .context("failed to initialize age encryptor for bundle")?;
+    let encrypted_writer =
+        write_bundle_archive(encrypted_writer, scratch_dir, manifest_path, manifest)?;
+    encrypted_writer
+        .finish()
+        .context("failed to finalize encrypted bundle stream")
+}
+
+#[cfg(unix)]
+fn sync_output_dir(output_dir: &Path) -> Result<()> {
+    std::fs::File::open(output_dir)
+        .and_then(|directory| directory.sync_all())
+        .with_context(|| {
+            format!(
+                "failed to synchronize output directory {}",
+                output_dir.display()
+            )
+        })
+}
+
+#[cfg(not(unix))]
+fn sync_output_dir(_output_dir: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -285,6 +336,7 @@ mod tests {
         };
 
         let bundle_path = scratch.path().join("bundle.tar.zst");
+        fs::write(&bundle_path, b"obsolete bundle").expect("old bundle must be written");
         write_bundle(scratch.path(), &bundle_path, &manifest, None)
             .expect("bundle must be written");
 
@@ -318,6 +370,47 @@ mod tests {
                 object_a.data_path,
                 object_b.data_path,
             ]
+        );
+    }
+
+    #[test]
+    fn preserves_existing_bundle_when_writing_fails() {
+        let scratch = tempfile::tempdir().expect("tempdir must be created");
+        fs::create_dir_all(scratch.path().join("ddl")).expect("ddl dir must be created");
+        fs::create_dir_all(scratch.path().join("data")).expect("data dir must be created");
+
+        let object = test_object("orders", 0);
+        fs::write(scratch.path().join(&object.ddl_path), "-- ddl")
+            .expect("ddl file must be written");
+
+        let manifest = Manifest {
+            format_version: 2,
+            created_at: "2026-03-02T12:00:00Z".to_owned(),
+            source_fingerprint: None,
+            source_pg_version_num: 150_002,
+            data_format: DataFormat::Binary,
+            consistent_snapshot: true,
+            objects: vec![object],
+        };
+        let bundle_path = scratch.path().join("bundle.tar.zst");
+        fs::write(&bundle_path, b"existing bundle").expect("existing bundle must be written");
+
+        let error = write_bundle(scratch.path(), &bundle_path, &manifest, None)
+            .expect_err("missing data file must fail bundle creation");
+
+        assert!(error.to_string().contains("failed to append"));
+        assert_eq!(
+            fs::read(&bundle_path).expect("existing bundle must remain readable"),
+            b"existing bundle"
+        );
+        assert!(
+            fs::read_dir(scratch.path())
+                .expect("scratch directory must be readable")
+                .all(|entry| !entry
+                    .expect("directory entry must be readable")
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".pgcopy-"))
         );
     }
 }
