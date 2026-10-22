@@ -1,6 +1,6 @@
-use std::fmt;
 use std::io::IsTerminal;
 use std::path::Path;
+use std::{fmt, fmt::Write as _};
 
 use tokio_postgres::{Config as PgConfig, config::Host};
 
@@ -34,9 +34,10 @@ pub(crate) fn print_export_startup_details(
     config_path: &Path,
     out_path: &Path,
     source_config: &PgConfig,
+    dry_run: bool,
     color: bool,
 ) {
-    print_startup_detail("command", "export", color);
+    print_command("export", dry_run, color);
     print_startup_detail("source_db", format_pg_connection(source_config), color);
     print_startup_detail("config", config_path.display(), color);
     print_startup_detail("out", out_path.display(), color);
@@ -45,13 +46,12 @@ pub(crate) fn print_export_startup_details(
 pub(crate) fn print_describe_startup_details(
     config_path: &Path,
     out_path: Option<&Path>,
-    format: describe::OutputFormat,
-    statistics: describe::StatisticsMode,
-    formatting: describe::FormattingMode,
+    options: describe::Options,
     source_config: &PgConfig,
+    dry_run: bool,
     color: bool,
 ) {
-    print_startup_detail("command", "describe", color);
+    print_command("describe", dry_run, color);
     print_startup_detail("source_db", format_pg_connection(source_config), color);
     print_startup_detail("config", config_path.display(), color);
     print_startup_detail(
@@ -59,9 +59,9 @@ pub(crate) fn print_describe_startup_details(
         out_path.map_or_else(|| "stdout".to_owned(), |path| path.display().to_string()),
         color,
     );
-    print_startup_detail("format", format, color);
-    print_startup_detail("statistics", statistics, color);
-    print_startup_detail("formatter", formatting, color);
+    print_startup_detail("format", options.output_format, color);
+    print_startup_detail("statistics", options.statistics, color);
+    print_startup_detail("formatter", options.formatting, color);
 }
 
 pub(crate) fn print_import_startup_details(
@@ -70,9 +70,10 @@ pub(crate) fn print_import_startup_details(
     concurrency: usize,
     ddl_only: bool,
     target_config: &PgConfig,
+    dry_run: bool,
     color: bool,
 ) {
-    print_startup_detail("command", "import", color);
+    print_command("import", dry_run, color);
     print_startup_detail("target_db", format_pg_connection(target_config), color);
     print_startup_detail("bundle", input_path.display(), color);
     print_startup_detail("mode", mode, color);
@@ -95,41 +96,47 @@ pub(crate) fn print_info_startup_details(
 pub(crate) fn format_pg_connection(config: &PgConfig) -> String {
     let ports = config.get_ports();
     let hosts = config.get_hosts();
-
-    let endpoints = if hosts.is_empty() {
-        vec![format!("localhost:{}", port_for_host(ports, 0))]
+    let mut connection = if hosts.is_empty() {
+        format!("localhost:{}", port_for_host(ports, 0))
     } else {
-        hosts
-            .iter()
-            .enumerate()
-            .map(|(index, host)| {
-                format!("{}:{}", format_pg_host(host), port_for_host(ports, index))
-            })
-            .collect::<Vec<_>>()
+        String::new()
     };
+    for (index, host) in hosts.iter().enumerate() {
+        if index != 0 {
+            connection.push(',');
+        }
+        match host {
+            Host::Tcp(value) => connection.push_str(value),
+            #[cfg(unix)]
+            Host::Unix(path) => {
+                write!(connection, "{}", path.display()).expect("writing to string is infallible");
+            }
+        }
+        write!(connection, ":{}", port_for_host(ports, index))
+            .expect("writing to string is infallible");
+    }
 
-    format!(
-        "{} / db={} / user={}",
-        endpoints.join(","),
+    write!(
+        connection,
+        " / db={} / user={}",
         config.get_dbname().unwrap_or("<default>"),
         config.get_user().unwrap_or("<default>"),
     )
-}
-
-fn format_pg_host(host: &Host) -> String {
-    match host {
-        Host::Tcp(value) => value.to_owned(),
-        #[cfg(unix)]
-        Host::Unix(path) => path.display().to_string(),
-    }
+    .expect("writing to string is infallible");
+    connection
 }
 
 fn port_for_host(ports: &[u16], index: usize) -> u16 {
     match ports {
         [] => 5432,
         [port] => *port,
-        many @ [first, ..] => many.iter().copied().nth(index).unwrap_or(*first),
+        many @ [first, ..] => many.get(index).copied().unwrap_or(*first),
     }
+}
+
+fn print_command(command: &str, dry_run: bool, color: bool) {
+    let suffix = if dry_run { " (dry-run)" } else { "" };
+    print_startup_detail("command", format_args!("{command}{suffix}"), color);
 }
 
 const fn yes_no(value: bool) -> &'static str {
@@ -140,4 +147,45 @@ fn stderr_supports_color() -> bool {
     std::io::stderr().is_terminal()
         && std::env::var_os("NO_COLOR").is_none()
         && std::env::var("TERM").is_ok_and(|term| term != "dumb")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PgConfig, format_pg_connection};
+
+    #[test]
+    fn connection_summary_preserves_endpoint_defaults_and_order() {
+        let mut config = PgConfig::new();
+        assert_eq!(
+            format_pg_connection(&config),
+            "localhost:5432 / db=<default> / user=<default>"
+        );
+        config
+            .host("first")
+            .host("second")
+            .host("third")
+            .port(5433)
+            .dbname("app")
+            .user("reader");
+        assert_eq!(
+            format_pg_connection(&config),
+            "first:5433,second:5433,third:5433 / db=app / user=reader"
+        );
+        config.port(5434);
+        assert_eq!(
+            format_pg_connection(&config),
+            "first:5433,second:5434,third:5433 / db=app / user=reader"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connection_summary_preserves_unix_socket_paths() {
+        let mut config = PgConfig::new();
+        config.host_path("/tmp/сокет").port(5433);
+        assert_eq!(
+            format_pg_connection(&config),
+            "/tmp/сокет:5433 / db=<default> / user=<default>"
+        );
+    }
 }

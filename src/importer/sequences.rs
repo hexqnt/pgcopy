@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 
 use crate::sql::quoted_fq_name;
 
-#[derive(Debug, Clone)]
 struct SequenceColumn {
     column_name: String,
     sequence_name: String,
@@ -49,12 +48,22 @@ $pgcopy$;"
 }
 
 fn sql_text_array_literal<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
-    let values = values
-        .into_iter()
-        .map(|value| format!("'{}'", value.replace('\'', "''")))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("ARRAY[{values}]")
+    let mut sql = String::from("ARRAY[");
+    for (index, value) in values.into_iter().enumerate() {
+        if index > 0 {
+            sql.push_str(", ");
+        }
+        sql.push('\'');
+        for part in value.split_inclusive('\'') {
+            sql.push_str(part);
+            if part.ends_with('\'') {
+                sql.push('\'');
+            }
+        }
+        sql.push('\'');
+    }
+    sql.push(']');
+    sql
 }
 
 /// После загрузки выравнивает serial/identity sequence по максимальному значению в таблице.
@@ -73,8 +82,7 @@ pub(super) async fn sync_table_sequences(
     let sql = build_batch_sync_sql(target_schema, target_name, &sequence_columns);
     client.batch_execute(&sql).await.with_context(|| {
         format!("failed to synchronize serial/identity sequences for {target_schema}.{target_name}")
-    })?;
-    Ok(())
+    })
 }
 
 async fn resolve_sequence_columns(
@@ -88,7 +96,6 @@ async fn resolve_sequence_columns(
     }
 
     let table_ref = quoted_fq_name(target_schema, target_name);
-    let effective_columns = effective_columns.to_vec();
     let rows = client
         .query(
             "

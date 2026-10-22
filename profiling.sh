@@ -21,7 +21,7 @@
 # Произвольную команду pgcopy можно передать после `--`, например:
 #   ./profiling.sh -- info --in vv.tar.zst
 #
-# Пример профилирования export из run_export.sh:
+# Пример профилирования экспорта:
 #   PGHOST=localhost PGPORT=5432 PGUSER=pguser PGPASSWORD=pguser \
 #     PGDATABASE=gas_dwh PGCOPY_PROFILE_NAME=pgcopy-export-c1 \
 #     ./profiling.sh -- --quiet export --config export/config.toml \

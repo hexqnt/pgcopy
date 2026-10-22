@@ -1,5 +1,5 @@
 macro_rules! selected_sources_sql {
-    ($query:literal) => {
+    ($($query:literal),+ $(,)?) => {
         concat!(
             "WITH selected AS (\n\
                  SELECT schema_name, relation_name, source_index\n\
@@ -8,7 +8,7 @@ macro_rules! selected_sources_sql {
                      pg_catalog.unnest($2::text[])\n\
                  ) WITH ORDINALITY AS input(schema_name, relation_name, source_index)\n\
              )\n",
-            $query
+            $($query),+
         )
     };
 }
@@ -88,15 +88,21 @@ pub(super) const CONSTRAINTS: &str = selected_sources_sql!(
 "
 );
 
-pub(super) const STATISTICS: &str = selected_sources_sql!(
-    "SELECT
+macro_rules! statistics_sql {
+    ($values:literal, $frequencies:literal) => {
+        selected_sources_sql!(
+            "SELECT
         stats.attname,
         stats.null_frac::float8,
         CASE WHEN stats.n_distinct >= 0 THEN stats.n_distinct::float8
              WHEN c.reltuples >= 0 THEN -stats.n_distinct::float8 * c.reltuples::float8 END,
         stats.avg_width,
-        NULL::text,
-        NULL::text,
+        ",
+            $values,
+            ",
+        ",
+            $frequencies,
+            ",
         selected.source_index
     FROM selected
     JOIN pg_catalog.pg_stats stats
@@ -105,25 +111,14 @@ pub(super) const STATISTICS: &str = selected_sources_sql!(
     JOIN pg_catalog.pg_class c
       ON c.relnamespace = n.oid AND c.relname = selected.relation_name
     ORDER BY selected.source_index, stats.attname
-"
-);
+",
+        )
+    };
+}
 
-pub(super) const STATISTICS_WITH_COMMON_VALUES: &str = selected_sources_sql!(
-    "SELECT
-        stats.attname,
-        stats.null_frac::float8,
-        CASE WHEN stats.n_distinct >= 0 THEN stats.n_distinct::float8
-             WHEN c.reltuples >= 0 THEN -stats.n_distinct::float8 * c.reltuples::float8 END,
-        stats.avg_width,
-        pg_catalog.to_json(stats.most_common_vals)::text,
-        pg_catalog.to_json(stats.most_common_freqs)::text,
-        selected.source_index
-    FROM selected
-    JOIN pg_catalog.pg_stats stats
-      ON stats.schemaname = selected.schema_name AND stats.tablename = selected.relation_name
-    JOIN pg_catalog.pg_namespace n ON n.nspname = selected.schema_name
-    JOIN pg_catalog.pg_class c
-      ON c.relnamespace = n.oid AND c.relname = selected.relation_name
-    ORDER BY selected.source_index, stats.attname
-"
+pub(super) const STATISTICS: &str = statistics_sql!("NULL::text", "NULL::text");
+
+pub(super) const STATISTICS_WITH_COMMON_VALUES: &str = statistics_sql!(
+    "pg_catalog.to_json(stats.most_common_vals)::text",
+    "pg_catalog.to_json(stats.most_common_freqs)::text"
 );

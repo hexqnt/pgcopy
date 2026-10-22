@@ -37,14 +37,7 @@ fn print_dry_run_export(
     let concurrency = export::resolve_export_concurrency(concurrency, &cfg.general)?;
     let bundle_password = crypto::resolve_bundle_password(bundle_password)?;
 
-    startup::print_startup_detail("command", "export (dry-run)", color);
-    startup::print_startup_detail(
-        "source_db",
-        startup::format_pg_connection(source_config),
-        color,
-    );
-    startup::print_startup_detail("config", config_path.display(), color);
-    startup::print_startup_detail("out", out_path.display(), color);
+    startup::print_export_startup_details(config_path, out_path, source_config, true, color);
     startup::print_startup_detail("objects", cfg.objects.len(), color);
     startup::print_startup_detail("concurrency", concurrency, color);
     let encrypted = bundle_password.is_some();
@@ -62,7 +55,7 @@ fn print_dry_run_export(
         };
         startup::print_startup_detail(
             &format!("  [{i}]"),
-            format!("{} -> {target}{export_as}", obj.select_raw),
+            format!("{} -> {target}{export_as}", obj.select.raw),
             color,
         );
     }
@@ -82,19 +75,18 @@ fn print_dry_run_import(
     let access = bundle_io::resolve_access(bundle_path, bundle_password)?;
     let manifest = bundle_io::read_manifest_from_bundle(bundle_path, &access)?;
 
-    startup::print_startup_detail("command", "import (dry-run)", color);
-    startup::print_startup_detail(
-        "target_db",
-        startup::format_pg_connection(target_config),
+    startup::print_import_startup_details(
+        bundle_path,
+        mode,
+        concurrency,
+        ddl_only,
+        target_config,
+        true,
         color,
     );
-    startup::print_startup_detail("bundle", bundle_path.display(), color);
-    startup::print_startup_detail("mode", mode, color);
-    startup::print_startup_detail("concurrency", concurrency, color);
-    startup::print_startup_detail("ddl_only", if ddl_only { "yes" } else { "no" }, color);
     startup::print_startup_detail(
         "encrypted",
-        if access.is_encrypted { "yes" } else { "no" },
+        if access.is_encrypted() { "yes" } else { "no" },
         color,
     );
     startup::print_startup_detail("objects", manifest.objects.len(), color);
@@ -134,28 +126,26 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             connection,
         } => {
             let cfg = config::load(&config_path)?;
-            let statistics = describe::StatisticsMode::from(statistics);
-            let formatting = describe::FormattingMode::from_no_format(no_format);
+            let options = describe::Options {
+                output_format: format,
+                statistics: describe::StatisticsMode::from(statistics),
+                include_comments: !no_comments,
+                formatting: describe::FormattingMode::from_no_format(no_format),
+            };
             let dsn_overrides = connection.into_overrides();
             let source_config = env_dsn::build(&dsn_overrides, cfg.connection.as_ref())?;
 
+            if cli.dry_run || !cli.quiet {
+                startup::print_describe_startup_details(
+                    &config_path,
+                    out.as_deref(),
+                    options,
+                    &source_config,
+                    cli.dry_run,
+                    startup_color,
+                );
+            }
             if cli.dry_run {
-                startup::print_startup_detail("command", "describe (dry-run)", startup_color);
-                startup::print_startup_detail(
-                    "source_db",
-                    startup::format_pg_connection(&source_config),
-                    startup_color,
-                );
-                startup::print_startup_detail("config", config_path.display(), startup_color);
-                startup::print_startup_detail(
-                    "out",
-                    out.as_deref()
-                        .map_or_else(|| "stdout".to_owned(), |path| path.display().to_string()),
-                    startup_color,
-                );
-                startup::print_startup_detail("format", format, startup_color);
-                startup::print_startup_detail("statistics", statistics, startup_color);
-                startup::print_startup_detail("formatter", formatting, startup_color);
                 startup::print_startup_detail(
                     "objects",
                     describe::unique_source_count(&cfg),
@@ -164,29 +154,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 return Ok(());
             }
 
-            if !cli.quiet {
-                startup::print_describe_startup_details(
-                    &config_path,
-                    out.as_deref(),
-                    format,
-                    statistics,
-                    formatting,
-                    &source_config,
-                    startup_color,
-                );
-            }
-            describe::run(
-                &cfg,
-                out.as_deref(),
-                describe::Options {
-                    output_format: format,
-                    statistics,
-                    include_comments: !no_comments,
-                    formatting,
-                },
-                &source_config,
-            )
-            .await?;
+            describe::run(&cfg, out.as_deref(), options, &source_config).await?;
         }
         Commands::Export {
             config: config_path,
@@ -217,11 +185,12 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                     &config_path,
                     &out,
                     &source_config,
+                    false,
                     startup_color,
                 );
             }
             export::run(
-                &config_path,
+                cfg,
                 &out,
                 concurrency,
                 password.as_deref(),
@@ -261,6 +230,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                     concurrency.get(),
                     ddl_only,
                     &target_config,
+                    false,
                     startup_color,
                 );
             }

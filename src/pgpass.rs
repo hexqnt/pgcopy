@@ -6,37 +6,6 @@
 use std::num::NonZeroU16;
 use std::path::PathBuf;
 
-/// Одна разобранная запись `.pgpass`.
-#[derive(Debug, PartialEq, Eq)]
-struct PgPassEntry {
-    host: String,
-    port: String,
-    dbname: String,
-    user: String,
-    password: String,
-}
-
-impl PgPassEntry {
-    fn parse(line: &str) -> Option<Self> {
-        let [host, port, dbname, user, password] = parse_line(line)?;
-
-        Some(Self {
-            host,
-            port,
-            dbname,
-            user,
-            password,
-        })
-    }
-
-    fn matches(&self, host: &str, port: &str, dbname: &str, user: &str) -> bool {
-        field_matches(&self.host, host)
-            && field_matches(&self.port, port)
-            && field_matches(&self.dbname, dbname)
-            && field_matches(&self.user, user)
-    }
-}
-
 /// Ищет пароль в `.pgpass` для заданных параметров подключения.
 ///
 /// Если хост не задан (Unix-сокет), для сопоставления используется `localhost`.
@@ -54,31 +23,20 @@ pub(crate) fn lookup(
     let dbname = dbname.unwrap_or("");
     let user = user.unwrap_or("");
 
-    for line in contents.lines() {
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        let Some(entry) = PgPassEntry::parse(line) else {
-            continue;
-        };
-        if entry.matches(host, &port_str, dbname, user) {
-            return Some(entry.password);
-        }
-    }
-
-    None
+    contents
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .find_map(|line| lookup_line(line, host, &port_str, dbname, user))
 }
 
 /// Возвращает пароль из `.pgpass`-строки, если она подходит подключению.
-#[cfg(test)]
 fn lookup_line(line: &str, host: &str, port: &str, dbname: &str, user: &str) -> Option<String> {
-    let entry = PgPassEntry::parse(line)?;
-    if entry.matches(host, port, dbname, user) {
-        Some(entry.password)
-    } else {
-        None
-    }
+    let [entry_host, entry_port, entry_dbname, entry_user, password] = parse_line(line)?;
+    [entry_host, entry_port, entry_dbname, entry_user]
+        .iter()
+        .zip([host, port, dbname, user])
+        .all(|(pattern, actual)| field_matches(pattern, actual))
+        .then_some(password)
 }
 
 /// Путь к `.pgpass` в зависимости от платформы.

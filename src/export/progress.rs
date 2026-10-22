@@ -3,9 +3,7 @@ use std::time::Duration;
 
 use crate::config::ObjectConfig;
 use crate::manifest::ManifestObject;
-use crate::progress::{
-    ProgressUi, StatusTone, format_duration_compact, object_label, one_line_error,
-};
+use crate::progress::{ProgressUi, StatusTone, format_duration_compact, one_line_error};
 
 /// Локальный UI-прогресс экспорта (stdout/stderr), отделённый от бизнес-логики.
 pub(super) struct ExportProgress {
@@ -24,32 +22,20 @@ impl ExportProgress {
     }
 
     pub(super) fn set_object_done(&self, manifest_object: &ManifestObject, elapsed: Duration) {
-        self.ui.inc(1);
-        self.ui.set_message(format!(
-            "done {}.{}",
-            manifest_object.source_schema, manifest_object.source_name
-        ));
-        let label = object_label(&manifest_object.source_schema, &manifest_object.source_name);
-        self.ui.print_status_line(
-            &label,
+        self.ui.set_object_done(
+            &manifest_object.source_schema,
+            &manifest_object.source_name,
             &format!("done ({})", format_duration_compact(elapsed)),
-            StatusTone::Success,
         );
     }
 
     pub(super) fn set_object_error(&self, object: &ObjectConfig, error: &dyn std::error::Error) {
         self.ui
-            .set_message(format!("failed {}", object.source_label()));
-        let label = object_label(object.source_schema(), object.source_name());
-        self.ui.print_status_line(
-            &label,
-            &format!("[x] error: {}", one_line_error(error)),
-            StatusTone::Error,
-        );
+            .set_object_error(object.source_schema(), object.source_name(), error);
     }
 
     pub(super) fn set_bundle_running(&self) {
-        self.ui.set_message("packing bundle".to_owned());
+        self.ui.set_message("packing bundle");
     }
 
     pub(super) fn finish_bundle_done(&self, out_path: &Path, elapsed: Duration) {

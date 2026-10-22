@@ -1,12 +1,12 @@
-use std::{collections::HashSet, fmt};
+mod clauses;
+mod ident;
+
+use std::{collections::HashSet, fmt, fmt::Write as _};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::sql::quote_ident;
-
-mod clauses;
-mod ident;
+use crate::sql::{push_quoted_ident, push_quoted_ident_list};
 
 /// Поддерживаемый тип проекции в select DSL.
 #[derive(Debug, Clone)]
@@ -95,13 +95,19 @@ impl SelectDsl {
         }
     }
 
-    /// Строит итоговый список колонок с валидацией against source schema.
-    pub fn effective_columns(&self, source_columns: &[String]) -> Result<Vec<String>> {
-        let source_set: HashSet<&str> = source_columns.iter().map(String::as_str).collect();
+    pub const fn has_clauses(&self) -> bool {
+        self.where_clause.is_some() || self.order_by_clause.is_some() || self.limit_clause.is_some()
+    }
 
+    /// Строит итоговый список колонок с валидацией against source schema.
+    pub fn effective_columns(&self, source_columns: &[impl AsRef<str>]) -> Result<Vec<String>> {
         let effective = match &self.projection {
-            ColumnProjection::All => source_columns.to_vec(),
-            ColumnProjection::ColumnsList(requested) => {
+            ColumnProjection::All => source_columns
+                .iter()
+                .map(|column| column.as_ref().to_owned())
+                .collect(),
+            ColumnProjection::ColumnsList(requested) | ColumnProjection::ExceptList(requested) => {
+                let source_set: HashSet<&str> = source_columns.iter().map(AsRef::as_ref).collect();
                 let mut seen = HashSet::new();
                 for column in requested {
                     if !source_set.contains(column.as_str()) {
@@ -112,40 +118,29 @@ impl SelectDsl {
                             self.source_name
                         );
                     }
-                    if !seen.insert(column) {
+                    if !seen.insert(column.as_str()) {
+                        let list = if matches!(self.projection, ColumnProjection::ColumnsList(_)) {
+                            "select"
+                        } else {
+                            "except"
+                        };
                         bail!(
-                            "column '{column}' is duplicated in select list '{}'",
+                            "column '{column}' is duplicated in {list} list '{}'",
                             self.raw
                         );
                     }
                 }
-                requested.clone()
-            }
-            ColumnProjection::ExceptList(excluded) => {
-                let mut seen = HashSet::new();
-                for column in excluded {
-                    if !source_set.contains(column.as_str()) {
-                        bail!(
-                            "column '{column}' from '{}' does not exist in source {}.{}",
-                            self.raw,
-                            self.source_schema,
-                            self.source_name
-                        );
-                    }
-                    if !seen.insert(column) {
-                        bail!(
-                            "column '{column}' is duplicated in except list '{}'",
-                            self.raw
-                        );
-                    }
+                if matches!(self.projection, ColumnProjection::ColumnsList(_)) {
+                    requested.clone()
+                } else {
+                    source_columns
+                        .iter()
+                        // Сохраняем порядок колонок источника для стабильного COPY.
+                        .map(AsRef::as_ref)
+                        .filter(|column| !seen.contains(column))
+                        .map(str::to_owned)
+                        .collect()
                 }
-
-                source_columns
-                    .iter()
-                    // Сохраняем порядок колонок источника для стабильного COPY.
-                    .filter(|column| !seen.contains(column))
-                    .cloned()
-                    .collect::<Vec<_>>()
             }
         };
 
@@ -157,14 +152,16 @@ impl SelectDsl {
             );
         }
 
-        let mut unique = HashSet::new();
-        for column in &effective {
-            if !unique.insert(column) {
-                bail!(
-                    "effective column list has duplicates for {}.{}",
-                    self.source_schema,
-                    self.source_name
-                );
+        if !matches!(self.projection, ColumnProjection::ColumnsList(_)) {
+            let mut unique = HashSet::new();
+            for column in &effective {
+                if !unique.insert(column) {
+                    bail!(
+                        "effective column list has duplicates for {}.{}",
+                        self.source_schema,
+                        self.source_name
+                    );
+                }
             }
         }
 
@@ -173,17 +170,19 @@ impl SelectDsl {
 
     /// Генерирует канонический SQL `SELECT` для COPY OUT.
     pub fn normalized_select_sql(&self, effective_columns: &[String]) -> String {
-        let columns = effective_columns
-            .iter()
-            .map(|column| quote_ident(column))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        let mut select_sql = format!(
-            "SELECT {columns} FROM {}.{}",
-            quote_ident(&self.source_schema),
-            quote_ident(&self.source_name),
+        let mut select_sql = String::with_capacity(
+            self.raw.len()
+                + effective_columns
+                    .iter()
+                    .map(|column| column.len() + 4)
+                    .sum::<usize>(),
         );
+        select_sql.push_str("SELECT ");
+        push_quoted_ident_list(&mut select_sql, effective_columns);
+        select_sql.push_str(" FROM ");
+        push_quoted_ident(&mut select_sql, &self.source_schema);
+        select_sql.push('.');
+        push_quoted_ident(&mut select_sql, &self.source_name);
 
         if let Some(where_clause) = self.where_clause.as_deref() {
             select_sql.push_str(" WHERE ");
@@ -196,8 +195,7 @@ impl SelectDsl {
         }
 
         if let Some(limit_clause) = self.limit_clause {
-            select_sql.push_str(" LIMIT ");
-            select_sql.push_str(&limit_clause.to_string());
+            write!(select_sql, " LIMIT {limit_clause}").expect("writing to string is infallible");
         }
 
         select_sql
@@ -342,6 +340,95 @@ mod tests {
     }
 
     #[test]
+    fn preserves_projection_validation_errors_and_source_order() {
+        let columns = ["id".to_owned(), "debug".to_owned(), "status".to_owned()];
+        for (projection, message) in [
+            ("id, id", "column 'id' is duplicated in select list"),
+            (
+                "* except (id, id)",
+                "column 'id' is duplicated in except list",
+            ),
+            ("missing, id", "column 'missing' from"),
+            ("* except (missing)", "column 'missing' from"),
+            (
+                "* except (id, debug, status)",
+                "effective column list is empty",
+            ),
+        ] {
+            let select = SelectDsl::parse(&format!("select {projection} from public.orders"))
+                .expect("projection must parse");
+            let error = select
+                .effective_columns(&columns)
+                .expect_err("projection must fail");
+            assert!(error.to_string().starts_with(message), "{error}");
+        }
+        let select = SelectDsl::parse("select status, id from public.orders")
+            .expect("projection must parse");
+        assert_eq!(
+            select
+                .effective_columns(&columns)
+                .expect("columns must resolve"),
+            ["status", "id"]
+        );
+    }
+
+    #[test]
+    fn checks_source_duplicates_only_in_effective_columns() {
+        let columns = ["id".to_owned(), "id".to_owned(), "debug".to_owned()];
+        for projection in ["*", "* except (debug)"] {
+            let select = SelectDsl::parse(&format!("select {projection} from public.orders"))
+                .expect("projection must parse");
+            let error = select
+                .effective_columns(&columns)
+                .expect_err("duplicates must fail");
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("effective column list has duplicates")
+            );
+        }
+        for (projection, expected) in [("id", "id"), ("* except (id)", "debug")] {
+            let select = SelectDsl::parse(&format!("select {projection} from public.orders"))
+                .expect("projection must parse");
+            assert_eq!(
+                select
+                    .effective_columns(&columns)
+                    .expect("columns must resolve"),
+                [expected]
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_clause_keywords_inside_quotes_and_parentheses() {
+        let select = SelectDsl::parse(
+            "select * from public.orders where label = 'order by ''limit''' and \"limit\" > 0 and id in (select id from public.other limit 1) order by id limit 7",
+        )
+        .expect("quoted and nested keywords must parse");
+        assert_eq!(
+            select.where_clause.as_deref(),
+            Some(
+                "label = 'order by ''limit''' and \"limit\" > 0 and id in (select id from public.other limit 1)"
+            )
+        );
+        assert_eq!(select.order_by_clause.as_deref(), Some("id"));
+        assert_eq!(select.limit_clause, Some(7));
+    }
+
+    #[test]
+    fn rejects_unicode_keyword_prefixes_without_panicking() {
+        for query in [
+            "selecλt * from public.orders",
+            "select * from public.orders wherλ id = 1",
+        ] {
+            assert!(
+                SelectDsl::parse(query).is_err(),
+                "query must be rejected: {query}"
+            );
+        }
+    }
+
+    #[test]
     fn builds_normalized_select_with_where() {
         let parsed = SelectDsl::parse(
             "select id, status from public.orders where status = 'paid' and id > 100",
@@ -373,6 +460,16 @@ mod tests {
             .expect("must parse");
         let sql = parsed.normalized_select_sql(&["OrderID".to_owned()]);
         assert_eq!(sql, "SELECT \"OrderID\" FROM \"123schema\".\"Orders\"");
+    }
+
+    #[test]
+    fn quotes_column_lists_without_changing_identifiers() {
+        let parsed = SelectDsl::parse("select * from \"схема\".\"таблица\"").expect("must parse");
+        let sql = parsed.normalized_select_sql(&["a\"b".to_owned(), "Поле".to_owned()]);
+        assert_eq!(
+            sql,
+            "SELECT \"a\"\"b\", \"Поле\" FROM \"схема\".\"таблица\""
+        );
     }
 
     #[test]

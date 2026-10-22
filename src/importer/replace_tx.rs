@@ -13,15 +13,17 @@ pub(super) async fn run_replace_atomically<T, F>(
 where
     F: std::future::Future<Output = Result<T>>,
 {
-    begin_replace_transaction(client, object).await?;
+    execute_replace_transaction_statement(client, object, "BEGIN", "begin").await?;
 
     match operation.await {
         Ok(value) => {
-            commit_replace_transaction(client, object).await?;
+            execute_replace_transaction_statement(client, object, "COMMIT", "commit").await?;
             Ok(value)
         }
         Err(error) => {
-            if let Err(rollback_error) = rollback_replace_transaction(client, object).await {
+            if let Err(rollback_error) =
+                execute_replace_transaction_statement(client, object, "ROLLBACK", "rollback").await
+            {
                 return Err(error.context(format!(
                     "failed to rollback replace transaction for {}.{}: {rollback_error}",
                     object.target_schema, object.target_name
@@ -30,27 +32,6 @@ where
             Err(error)
         }
     }
-}
-
-async fn begin_replace_transaction(
-    client: &tokio_postgres::Client,
-    object: &ManifestObject,
-) -> Result<()> {
-    execute_replace_transaction_statement(client, object, "BEGIN", "begin").await
-}
-
-async fn commit_replace_transaction(
-    client: &tokio_postgres::Client,
-    object: &ManifestObject,
-) -> Result<()> {
-    execute_replace_transaction_statement(client, object, "COMMIT", "commit").await
-}
-
-async fn rollback_replace_transaction(
-    client: &tokio_postgres::Client,
-    object: &ManifestObject,
-) -> Result<()> {
-    execute_replace_transaction_statement(client, object, "ROLLBACK", "rollback").await
 }
 
 async fn execute_replace_transaction_statement(

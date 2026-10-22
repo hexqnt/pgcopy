@@ -1,3 +1,7 @@
+mod catalog;
+mod external;
+mod render;
+
 use std::collections::HashSet;
 use std::fmt;
 use std::io::Write as _;
@@ -11,10 +15,6 @@ use serde::Serialize;
 
 use crate::config::Config;
 use crate::pg::{self, RelationKind};
-
-mod catalog;
-mod external;
-mod render;
 
 /// Формат контекста, создаваемого командой `describe`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
@@ -52,15 +52,6 @@ pub(crate) enum ProfileMode {
     Statistics,
 }
 
-impl ProfileMode {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Statistics => "statistics",
-        }
-    }
-}
-
 /// Полный режим сбора статистики после разбора CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StatisticsMode {
@@ -89,6 +80,16 @@ impl StatisticsMode {
     }
 }
 
+impl From<Option<StatisticsSelection>> for StatisticsMode {
+    fn from(selection: Option<StatisticsSelection>) -> Self {
+        match selection {
+            None => Self::Disabled,
+            Some(StatisticsSelection::Basic) => Self::Basic,
+            Some(StatisticsSelection::WithCommonValues(limit)) => Self::WithCommonValues(limit),
+        }
+    }
+}
+
 impl fmt::Display for StatisticsMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -96,12 +97,6 @@ impl fmt::Display for StatisticsMode {
             Self::Basic => f.write_str("basic"),
             Self::WithCommonValues(limit) => write!(f, "top {limit} values"),
         }
-    }
-}
-
-impl fmt::Display for ProfileMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
     }
 }
 
@@ -123,16 +118,6 @@ impl FromStr for StatisticsSelection {
             .parse::<NonZeroUsize>()
             .map(Self::WithCommonValues)
             .map_err(|_| "statistics value must be a positive integer".to_owned())
-    }
-}
-
-impl From<Option<StatisticsSelection>> for StatisticsMode {
-    fn from(selection: Option<StatisticsSelection>) -> Self {
-        match selection {
-            None => Self::Disabled,
-            Some(StatisticsSelection::Basic) => Self::Basic,
-            Some(StatisticsSelection::WithCommonValues(limit)) => Self::WithCommonValues(limit),
-        }
     }
 }
 
@@ -302,23 +287,19 @@ pub(crate) struct Options {
     pub formatting: FormattingMode,
 }
 
-fn source_relations(config: &Config) -> Vec<SourceRelation<'_>> {
+fn source_relations(config: &Config) -> impl Iterator<Item = SourceRelation<'_>> {
     let mut seen = HashSet::with_capacity(config.objects.len());
-    config
-        .objects
-        .iter()
-        .filter_map(|object| {
-            let source = SourceRelation {
-                schema: object.source_schema(),
-                name: object.source_name(),
-            };
-            seen.insert((source.schema, source.name)).then_some(source)
-        })
-        .collect()
+    config.objects.iter().filter_map(move |object| {
+        let source = SourceRelation {
+            schema: object.source_schema(),
+            name: object.source_name(),
+        };
+        seen.insert((source.schema, source.name)).then_some(source)
+    })
 }
 
 pub(crate) fn unique_source_count(config: &Config) -> usize {
-    source_relations(config).len()
+    source_relations(config).count()
 }
 
 fn output_directory(path: Option<&Path>) -> &Path {
@@ -364,7 +345,7 @@ pub(crate) async fn run(
     source_config: &tokio_postgres::Config,
 ) -> Result<()> {
     let client = pg::connect(source_config).await?;
-    let sources = source_relations(config);
+    let sources = source_relations(config).collect::<Vec<_>>();
     let catalog_options = catalog::CatalogOptions {
         statistics: options.statistics,
         include_comments: options.include_comments,
@@ -424,7 +405,7 @@ mod tests {
         .expect("config must be written");
         let config = config::load(file.path()).expect("config must parse");
 
-        let sources = source_relations(&config);
+        let sources = source_relations(&config).collect::<Vec<_>>();
         assert_eq!(sources.len(), 2);
         assert_eq!((sources[0].schema, sources[0].name), ("public", "orders"));
         assert_eq!((sources[1].schema, sources[1].name), ("reporting", "sales"));

@@ -58,10 +58,10 @@ pub fn run(
 
     match output_format {
         InfoOutputFormat::Text => {
-            print_text(bundle_path, access.is_encrypted, &manifest, show_objects);
+            print_text(bundle_path, access.is_encrypted(), &manifest, show_objects);
         }
         InfoOutputFormat::Json => {
-            print_json(bundle_path, access.is_encrypted, &manifest, show_objects)?;
+            print_json(bundle_path, access.is_encrypted(), &manifest, show_objects)?;
         }
     }
 

@@ -40,34 +40,25 @@ pub(super) async fn prepare_target_table(
             )
         })?;
 
-    match mode {
-        ImportMode::Replace => {
-            if let Some(kind) = target_kind {
-                drop_existing_target_relation(client, object, kind).await?;
-            }
-
-            execute_ddl_sql(client, ddl_sql, &object.target_schema, &object.target_name).await?;
+    match (mode, target_kind) {
+        (ImportMode::Replace, Some(kind)) => {
+            drop_existing_target_relation(client, object, kind).await?;
         }
-        ImportMode::Append => match target_kind {
-            None => {
-                execute_ddl_sql(client, ddl_sql, &object.target_schema, &object.target_name)
-                    .await?;
-            }
-            Some(RelationKind::Table) => {
-                compat::validate_existing_table_compatibility(client, object).await?;
-            }
-            Some(other_kind) => {
-                bail!(
-                    "append mode requires target {}.{} to be a table, got {}",
-                    object.target_schema,
-                    object.target_name,
-                    other_kind.as_str()
-                );
-            }
-        },
+        (ImportMode::Append, Some(RelationKind::Table)) => {
+            return compat::validate_existing_table_compatibility(client, object).await;
+        }
+        (ImportMode::Append, Some(other_kind)) => {
+            bail!(
+                "append mode requires target {}.{} to be a table, got {}",
+                object.target_schema,
+                object.target_name,
+                other_kind.as_str()
+            );
+        }
+        (_, None) => {}
     }
 
-    Ok(())
+    execute_ddl_sql(client, ddl_sql, &object.target_schema, &object.target_name).await
 }
 
 async fn execute_ddl_sql(
@@ -78,8 +69,7 @@ async fn execute_ddl_sql(
 ) -> Result<()> {
     client.batch_execute(ddl_sql).await.with_context(|| {
         format!("failed to execute DDL for target object {target_schema}.{target_name}")
-    })?;
-    Ok(())
+    })
 }
 
 async fn drop_existing_target_relation(
@@ -102,7 +92,5 @@ async fn drop_existing_target_relation(
             object.target_schema,
             object.target_name
         )
-    })?;
-
-    Ok(())
+    })
 }

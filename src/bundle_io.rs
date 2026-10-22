@@ -9,26 +9,32 @@ use crate::manifest::{self, Manifest};
 
 /// Информация о доступе к bundle: зашифрован ли файл и каким паролем его открыть.
 #[derive(Debug, Clone)]
-pub struct BundleAccess {
-    pub is_encrypted: bool,
-    pub password: Option<crypto::BundlePassword>,
+pub enum BundleAccess {
+    Plain,
+    Encrypted(crypto::BundlePassword),
+}
+
+impl BundleAccess {
+    pub const fn is_encrypted(&self) -> bool {
+        matches!(self, Self::Encrypted(_))
+    }
 }
 
 /// Определяет режим доступа к bundle и проверяет обязательность пароля.
 pub fn resolve_access(bundle_path: &Path, cli_password: Option<&str>) -> Result<BundleAccess> {
     let password = crypto::resolve_bundle_password(cli_password)?;
     let is_encrypted = crypto::is_age_encrypted_bundle(bundle_path)?;
-    if is_encrypted && password.is_none() {
-        bail!(
-            "bundle {} is encrypted with age passphrase; provide --password or set PASSWORD",
-            bundle_path.display()
-        );
+    if is_encrypted {
+        let password = password.with_context(|| {
+            format!(
+                "bundle {} is encrypted with age passphrase; provide --password or set PASSWORD",
+                bundle_path.display()
+            )
+        })?;
+        Ok(BundleAccess::Encrypted(password))
+    } else {
+        Ok(BundleAccess::Plain)
     }
-
-    Ok(BundleAccess {
-        is_encrypted,
-        password,
-    })
 }
 
 /// Открывает reader для payload bundle (дешифруя и распаковывая при необходимости).
@@ -36,13 +42,7 @@ pub fn open_bundle_reader(bundle_path: &Path, access: &BundleAccess) -> Result<B
     let input = std::fs::File::open(bundle_path)
         .with_context(|| format!("failed to open bundle {}", bundle_path.display()))?;
 
-    if access.is_encrypted {
-        let password = access.password.as_ref().with_context(|| {
-            format!(
-                "bundle {} is encrypted and requires --password or PASSWORD",
-                bundle_path.display()
-            )
-        })?;
+    if let BundleAccess::Encrypted(password) = access {
         let decryptor = age::Decryptor::new_buffered(std::io::BufReader::new(input))
             .with_context(|| format!("failed to read age header from {}", bundle_path.display()))?;
         if !decryptor.is_scrypt() {
@@ -101,17 +101,15 @@ pub fn next_required_entry<'a, R: Read>(
     entries: &mut tar::Entries<'a, R>,
     expected_rel_path: &str,
 ) -> Result<tar::Entry<'a, R>> {
-    let entry_result = entries.next().with_context(|| {
+    let entry = entries.next().with_context(|| {
         format!("bundle is truncated: expected archive entry '{expected_rel_path}'")
     })?;
-    let entry_result = entry_result.with_context(|| {
+    let entry = entry.with_context(|| {
         format!("failed to read archive entry while expecting '{expected_rel_path}'")
     })?;
-    let entry = entry_result;
     let actual_path = entry
         .path()
-        .context("failed to resolve archive entry path")?
-        .into_owned();
+        .context("failed to resolve archive entry path")?;
     if actual_path != Path::new(expected_rel_path) {
         bail!(
             "bundle layout error: expected archive entry '{}', got '{}'",
@@ -120,6 +118,7 @@ pub fn next_required_entry<'a, R: Read>(
         );
     }
 
+    drop(actual_path);
     Ok(entry)
 }
 
@@ -340,14 +339,8 @@ mod tests {
         write_bundle(scratch.path(), &bundle_path, &manifest, None)
             .expect("bundle must be written");
 
-        let reader = open_bundle_reader(
-            &bundle_path,
-            &BundleAccess {
-                is_encrypted: false,
-                password: None,
-            },
-        )
-        .expect("bundle must be readable");
+        let reader = open_bundle_reader(&bundle_path, &BundleAccess::Plain)
+            .expect("bundle must be readable");
         let mut archive = tar::Archive::new(reader);
         let entries = archive.entries().expect("entries must be listed");
         let names = entries

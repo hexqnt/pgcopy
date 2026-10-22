@@ -98,7 +98,10 @@ pub(super) fn format(
     for formatter in formatters {
         std::fs::write(temporary.path(), contents.as_bytes())
             .context("failed to stage schema context for external formatter")?;
-        let result = run_formatter(*formatter, temporary.path());
+        let result = Command::new(formatter.executable)
+            .args(formatter.arguments_before_path)
+            .arg(temporary.path())
+            .output();
         match result {
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => {
@@ -210,13 +213,6 @@ fn validate_formatted_output(
             .with_context(|| format!("external formatter {formatter} produced invalid JSON"))?;
     }
     Ok(())
-}
-
-fn run_formatter(formatter: Formatter, path: &Path) -> std::io::Result<Output> {
-    Command::new(formatter.executable)
-        .args(formatter.arguments_before_path)
-        .arg(path)
-        .output()
 }
 
 #[cfg(test)]

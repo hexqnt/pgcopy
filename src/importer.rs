@@ -1,13 +1,3 @@
-use std::num::NonZeroUsize;
-use std::time::Instant;
-use std::{fmt, path::Path};
-
-use anyhow::{Context, Result, bail};
-use clap::ValueEnum;
-
-use crate::bundle_io;
-use crate::pg;
-
 mod compat;
 mod copy_stream;
 mod load;
@@ -17,6 +7,16 @@ mod replace_tx;
 mod sequences;
 mod stream;
 mod target_table;
+
+use std::num::NonZeroUsize;
+use std::time::Instant;
+use std::{fmt, path::Path};
+
+use anyhow::{Context, Result, bail};
+use clap::ValueEnum;
+
+use crate::bundle_io;
+use crate::pg;
 
 /// Режим импорта при наличии объекта в target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -92,11 +92,10 @@ pub async fn run(
     .context("parallel import bundle unpack task failed")??;
 
     let manifest = bundle_io::read_manifest_from_dir(scratch.path())?;
-    if concurrency.get() > 1
-        && manifest
-            .objects
-            .iter()
-            .any(|object| !object.requires_data_load())
+    if manifest
+        .objects
+        .iter()
+        .any(|object| !object.requires_data_load())
     {
         bail!(
             "parallel import with --concurrency > 1 is not supported for bundles containing view objects; rerun with --concurrency 1"
@@ -109,8 +108,7 @@ pub async fn run(
         &manifest,
         parallel::ImportParallelOptions {
             mode,
-            concurrency: concurrency.get(),
-            ddl_only,
+            concurrency,
             operation_started_at,
             progress_enabled,
         },

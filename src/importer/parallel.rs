@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -21,8 +22,7 @@ struct ImportObjectResult {
 
 pub(super) struct ImportParallelOptions {
     pub(super) mode: ImportMode,
-    pub(super) concurrency: usize,
-    pub(super) ddl_only: bool,
+    pub(super) concurrency: NonZeroUsize,
     pub(super) operation_started_at: Instant,
     pub(super) progress_enabled: bool,
 }
@@ -37,7 +37,6 @@ pub async fn import_objects_parallel(
     let ImportParallelOptions {
         mode,
         concurrency,
-        ddl_only,
         operation_started_at,
         progress_enabled,
     } = options;
@@ -47,23 +46,16 @@ pub async fn import_objects_parallel(
     for object in &manifest.objects {
         progress.set_object_running(object);
     }
-    let mut workers =
-        parallel_workers::spawn_bucket_workers(&manifest.objects, concurrency, |tasks| {
+    let mut workers = parallel_workers::spawn_bucket_workers(
+        &manifest.objects,
+        concurrency,
+        |tasks| {
             let target_config = target_config.clone();
             let scratch_dir = scratch_dir.to_path_buf();
             // Каждый worker использует отдельное соединение с target БД.
-            async move {
-                import_worker(
-                    &target_config,
-                    &scratch_dir,
-                    tasks,
-                    mode,
-                    data_format,
-                    ddl_only,
-                )
-                .await
-            }
-        });
+            async move { import_worker(&target_config, &scratch_dir, tasks, mode, data_format).await }
+        },
+    );
 
     let mut total_rows = 0_u64;
     let workers_result = parallel_workers::process_joinset_outcomes(
@@ -103,9 +95,8 @@ async fn import_worker(
     tasks: Vec<(usize, ManifestObject)>,
     mode: ImportMode,
     data_format: DataFormat,
-    ddl_only: bool,
 ) -> ImportWorkerOutcome {
-    let Some((_, first_object)) = tasks.first().cloned() else {
+    let Some((_, first_object)) = tasks.first() else {
         return ImportWorkerOutcome::empty();
     };
 
@@ -113,15 +104,17 @@ async fn import_worker(
 
     let client = crate::pg::connect(target_config)
         .await
-        .with_context(|| "failed to connect target database for parallel import worker".to_owned());
+        .context("failed to connect target database for parallel import worker");
     let client = match client {
         Ok(client) => client,
-        Err(error) => return ImportWorkerOutcome::with_failure(completed, first_object, error),
+        Err(error) => {
+            return ImportWorkerOutcome::with_failure(completed, first_object.clone(), error);
+        }
     };
 
     for (index, object) in tasks {
         let object_started_at = Instant::now();
-        let imported = import_object(&client, scratch_dir, &object, mode, data_format, ddl_only)
+        let imported = import_object(&client, scratch_dir, &object, mode, data_format)
             .await
             .with_context(|| {
                 format!(
@@ -152,20 +145,11 @@ async fn import_object(
     object: &ManifestObject,
     mode: ImportMode,
     data_format: DataFormat,
-    ddl_only: bool,
 ) -> Result<u64> {
     let ddl_sql = read_ddl_from_bundle(scratch_dir, &object.ddl_path).await?;
-    if ddl_only {
-        load::prepare_object_ddl_only(client, object, mode, &ddl_sql).await?;
-        return Ok(0);
-    }
-    if !object.requires_data_load() {
-        load::prepare_object_ddl_only(client, object, mode, &ddl_sql).await?;
-        return Ok(0);
-    }
 
     let data_path = scratch_dir.join(&object.data_path);
-    let inserted_rows = load::load_object(client, object, mode, &ddl_sql, || async {
+    load::load_object(client, object, mode, &ddl_sql, || async {
         let mut source = copy_stream::FileChunkSource::open(&data_path).await?;
         copy_stream::copy_data_in(
             client,
@@ -185,9 +169,7 @@ async fn import_object(
             )
         })
     })
-    .await?;
-
-    Ok(inserted_rows)
+    .await
 }
 
 async fn read_ddl_from_bundle(scratch_dir: &Path, ddl_rel_path: &str) -> Result<String> {

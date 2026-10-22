@@ -1,3 +1,5 @@
+mod sql;
+
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 
@@ -12,11 +14,39 @@ use super::{
     RelationDescription, RelationName, SourceRelation, StatisticsMode, StatisticsStatus,
 };
 
-mod sql;
-
 pub(super) struct CatalogOptions {
     pub statistics: StatisticsMode,
     pub include_comments: bool,
+}
+
+struct PostgresVersion {
+    text: String,
+    number: i32,
+}
+
+struct RelationMetadata {
+    kind: RelationKind,
+    comment: Option<String>,
+    view_definition: Option<String>,
+    row_estimate: Option<i64>,
+}
+
+struct CatalogSelection<'a> {
+    schemas: Vec<&'a str>,
+    relation_names: Vec<&'a str>,
+}
+
+impl<'a> CatalogSelection<'a> {
+    fn new(sources: &[SourceRelation<'a>]) -> Self {
+        Self {
+            schemas: sources.iter().map(|source| source.schema).collect(),
+            relation_names: sources.iter().map(|source| source.name).collect(),
+        }
+    }
+
+    const fn len(&self) -> usize {
+        self.schemas.len()
+    }
 }
 
 fn relation_kind(relkind: &str, source: SourceRelation<'_>) -> Result<RelationKind> {
@@ -34,21 +64,19 @@ fn relation_kind(relkind: &str, source: SourceRelation<'_>) -> Result<RelationKi
 
 fn parse_column(row: &Row) -> Result<ColumnDescription> {
     let mut expression: Option<String> = row.get(3);
-    let identity_raw: String = row.get(4);
-    let generated_raw: String = row.get(5);
-    let identity = match identity_raw.as_str() {
+    let identity = match row.get::<_, &str>(4) {
         "" => None,
         "a" => Some(IdentityGeneration::Always),
         "d" => Some(IdentityGeneration::ByDefault),
         other => bail!("unsupported PostgreSQL identity kind '{other}'"),
     };
-    let generated = match generated_raw.as_str() {
+    let generated = match row.get::<_, &str>(5) {
         "" => None,
-        "s" | "v" => Some(GeneratedColumn {
+        kind @ ("s" | "v") => Some(GeneratedColumn {
             expression: expression
                 .take()
                 .context("generated column is missing its expression")?,
-            storage: if generated_raw == "s" {
+            storage: if kind == "s" {
                 GeneratedStorage::Stored
             } else {
                 GeneratedStorage::Virtual
@@ -56,8 +84,7 @@ fn parse_column(row: &Row) -> Result<ColumnDescription> {
         }),
         other => bail!("unsupported PostgreSQL generated column kind '{other}'"),
     };
-    let enum_values_json: String = row.get(8);
-    let enum_values = serde_json::from_str(&enum_values_json)
+    let enum_values = serde_json::from_str(row.get::<_, &str>(8))
         .context("failed to decode PostgreSQL enum labels")?;
     let default_expression = if identity.is_none() && generated.is_none() {
         expression
@@ -83,15 +110,15 @@ fn parse_common_values(row: &Row, limit: Option<NonZeroUsize>) -> Result<Vec<Com
     let Some(limit) = limit else {
         return Ok(Vec::new());
     };
-    let Some(values_json) = row.get::<_, Option<String>>(4) else {
+    let Some(values_json) = row.get::<_, Option<&str>>(4) else {
         return Ok(Vec::new());
     };
     let frequencies_json = row
-        .get::<_, Option<String>>(5)
+        .get::<_, Option<&str>>(5)
         .context("pg_stats has common values without frequencies")?;
     let values: Vec<serde_json::Value> =
-        serde_json::from_str(&values_json).context("failed to decode pg_stats common values")?;
-    let frequencies: Vec<f64> = serde_json::from_str(&frequencies_json)
+        serde_json::from_str(values_json).context("failed to decode pg_stats common values")?;
+    let frequencies: Vec<f64> = serde_json::from_str(frequencies_json)
         .context("failed to decode pg_stats common frequencies")?;
     if values.len() != frequencies.len() {
         bail!(
@@ -123,6 +150,17 @@ fn apply_statistics(
         }
     }
     available
+}
+
+fn source_index(row: &Row, source_count: usize) -> Result<usize> {
+    let ordinal: i64 = row
+        .try_get("source_index")
+        .context("PostgreSQL catalog result has no valid source ordinal")?;
+    usize::try_from(ordinal)
+        .ok()
+        .and_then(|value| value.checked_sub(1))
+        .filter(|&index| index < source_count)
+        .with_context(|| format!("PostgreSQL returned invalid source ordinal {ordinal}"))
 }
 
 pub(super) async fn load(
@@ -176,23 +214,41 @@ async fn load_in_transaction(
         load_statistics(client, &selection, options.statistics),
     )?;
 
-    let parts = metadata
-        .into_iter()
+    let relations = sources
+        .iter()
+        .zip(metadata)
         .zip(columns)
         .zip(constraints)
         .zip(statistics)
         .map(
-            |(((metadata, columns), constraints), statistics)| RelationParts {
-                metadata,
-                columns,
-                constraints,
-                statistics,
+            |((((source, metadata), mut columns), constraints), statistics)| {
+                if columns.is_empty() {
+                    bail!(
+                        "source relation {}.{} has no columns",
+                        source.schema,
+                        source.name
+                    );
+                }
+                let statistics_status = options.statistics.is_enabled().then(|| {
+                    if apply_statistics(&mut columns, statistics) {
+                        StatisticsStatus::Available
+                    } else {
+                        StatisticsStatus::Unavailable
+                    }
+                });
+                Ok(RelationDescription {
+                    schema: source.schema.to_owned(),
+                    name: source.name.to_owned(),
+                    kind: metadata.kind,
+                    comment: metadata.comment,
+                    columns,
+                    constraints,
+                    view_definition: metadata.view_definition,
+                    row_estimate: metadata.row_estimate,
+                    statistics_status,
+                })
             },
-        );
-    let relations = sources
-        .iter()
-        .zip(parts)
-        .map(|(source, parts)| parts.into_description(*source, options.statistics.is_enabled()))
+        )
         .collect::<Result<Vec<_>>>()?;
 
     let mut warnings = Vec::new();
@@ -224,11 +280,6 @@ async fn load_in_transaction(
     })
 }
 
-struct PostgresVersion {
-    text: String,
-    number: i32,
-}
-
 async fn load_version(client: &Client) -> Result<PostgresVersion> {
     let row = client
         .query_one(
@@ -238,88 +289,11 @@ async fn load_version(client: &Client) -> Result<PostgresVersion> {
         .await
         .context("failed to fetch PostgreSQL version")?;
     let text = row.get(0);
-    let number_raw: String = row.get(1);
+    let number_raw: &str = row.get(1);
     let number = number_raw
         .parse()
         .with_context(|| format!("invalid server_version_num '{number_raw}'"))?;
     Ok(PostgresVersion { text, number })
-}
-
-struct RelationMetadata {
-    kind: RelationKind,
-    comment: Option<String>,
-    view_definition: Option<String>,
-    row_estimate: Option<i64>,
-}
-
-struct RelationParts {
-    metadata: RelationMetadata,
-    columns: Vec<ColumnDescription>,
-    constraints: Vec<ConstraintDescription>,
-    statistics: HashMap<String, ColumnStatistics>,
-}
-
-impl RelationParts {
-    fn into_description(
-        mut self,
-        source: SourceRelation<'_>,
-        statistics_enabled: bool,
-    ) -> Result<RelationDescription> {
-        if self.columns.is_empty() {
-            bail!(
-                "source relation {}.{} has no columns",
-                source.schema,
-                source.name
-            );
-        }
-        let statistics_status = statistics_enabled.then(|| {
-            if apply_statistics(&mut self.columns, self.statistics) {
-                StatisticsStatus::Available
-            } else {
-                StatisticsStatus::Unavailable
-            }
-        });
-        Ok(RelationDescription {
-            schema: source.schema.to_owned(),
-            name: source.name.to_owned(),
-            kind: self.metadata.kind,
-            comment: self.metadata.comment,
-            columns: self.columns,
-            constraints: self.constraints,
-            view_definition: self.metadata.view_definition,
-            row_estimate: self.metadata.row_estimate,
-            statistics_status,
-        })
-    }
-}
-
-struct CatalogSelection<'a> {
-    schemas: Vec<&'a str>,
-    relation_names: Vec<&'a str>,
-}
-
-impl<'a> CatalogSelection<'a> {
-    fn new(sources: &[SourceRelation<'a>]) -> Self {
-        Self {
-            schemas: sources.iter().map(|source| source.schema).collect(),
-            relation_names: sources.iter().map(|source| source.name).collect(),
-        }
-    }
-
-    const fn len(&self) -> usize {
-        self.schemas.len()
-    }
-}
-
-fn source_index(row: &Row, source_count: usize) -> Result<usize> {
-    let ordinal: i64 = row
-        .try_get("source_index")
-        .context("PostgreSQL catalog result has no valid source ordinal")?;
-    usize::try_from(ordinal)
-        .ok()
-        .and_then(|value| value.checked_sub(1))
-        .filter(|&index| index < source_count)
-        .with_context(|| format!("PostgreSQL returned invalid source ordinal {ordinal}"))
 }
 
 async fn load_relation_metadata(
@@ -345,14 +319,14 @@ async fn load_relation_metadata(
     for row in rows {
         let index = source_index(&row, sources.len())?;
         let source = sources[index];
-        let relkind = row.get::<_, Option<String>>(0).with_context(|| {
+        let relkind = row.get::<_, Option<&str>>(0).with_context(|| {
             format!(
                 "source relation {}.{} does not exist",
                 source.schema, source.name
             )
         })?;
         metadata[index] = Some(RelationMetadata {
-            kind: relation_kind(&relkind, source)?,
+            kind: relation_kind(relkind, source)?,
             comment: row.get(1),
             row_estimate: row.get(2),
             view_definition: row.get(3),
@@ -414,14 +388,13 @@ async fn load_constraints(
     let mut constraints = (0..selection.len()).map(|_| Vec::new()).collect::<Vec<_>>();
     for row in rows {
         let index = source_index(&row, selection.len())?;
-        let raw_kind: String = row.get(1);
-        let kind = match raw_kind.as_str() {
+        let kind = match row.get::<_, &str>(1) {
             "p" => ConstraintKind::PrimaryKey,
             "u" => ConstraintKind::Unique,
             "f" => ConstraintKind::ForeignKey,
             "c" => ConstraintKind::Check,
             "x" => ConstraintKind::Exclusion,
-            _ => bail!("unsupported constraint kind '{raw_kind}'"),
+            other => bail!("unsupported constraint kind '{other}'"),
         };
         let referenced_schema: Option<String> = row.get(3);
         let referenced_name: Option<String> = row.get(4);

@@ -13,6 +13,10 @@ const COPY_CHUNK_SIZE: usize = 128 * 1024;
 // Глубина bounded-канала COPY IN в tokio-postgres с учётом слота sender-а.
 const COPY_PIPELINE_DEPTH: usize = 2;
 
+pub(super) trait CopyChunkSource {
+    async fn read_chunk(&mut self, buffer: &mut [u8]) -> Result<usize>;
+}
+
 struct CopyBufferPool {
     pending: VecDeque<Bytes>,
 }
@@ -89,10 +93,6 @@ impl<R: Read> CopyChunkSource for ReaderChunkSource<'_, R> {
     }
 }
 
-pub(super) trait CopyChunkSource {
-    async fn read_chunk(&mut self, buffer: &mut [u8]) -> Result<usize>;
-}
-
 pub(super) async fn copy_data_in<S: CopyChunkSource>(
     client: &tokio_postgres::Client,
     source: &mut S,
@@ -127,13 +127,11 @@ pub(super) async fn copy_data_in<S: CopyChunkSource>(
         buffers.retain(chunk);
     }
 
-    let inserted_rows = copy_sink
+    copy_sink
         .as_mut()
         .finish()
         .await
-        .context("failed to finish COPY IN")?;
-
-    Ok(inserted_rows)
+        .context("failed to finish COPY IN")
 }
 
 #[cfg(test)]

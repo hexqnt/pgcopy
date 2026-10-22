@@ -1,6 +1,3 @@
-use anyhow::Result;
-use clap::Parser;
-
 mod app;
 mod bundle_io;
 mod cli;
@@ -20,6 +17,9 @@ mod select_dsl;
 mod sql;
 mod startup;
 mod types;
+
+use anyhow::Result;
+use clap::Parser;
 
 #[tokio::main]
 async fn main() -> Result<()> {

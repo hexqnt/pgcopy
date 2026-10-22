@@ -29,19 +29,19 @@ pub async fn export_worker(
     data_format: DataFormat,
     snapshot_id: Option<&str>,
 ) -> ExportWorkerOutcome {
-    let Some((_, first_object)) = tasks.first().cloned() else {
+    let Some((_, first_object)) = tasks.first() else {
         return ExportWorkerOutcome::empty();
     };
 
     let mut completed = Vec::with_capacity(tasks.len());
-    let mut last_object = Some(first_object.clone());
+    let mut last_object = None;
 
     let client = match pg::connect(source_config).await {
         Ok(client) => client,
         Err(error) => {
             return ExportWorkerOutcome::with_failure(
                 completed,
-                first_object,
+                first_object.clone(),
                 error.context("failed to connect source database for parallel export"),
             );
         }
@@ -56,7 +56,7 @@ pub async fn export_worker(
         {
             return ExportWorkerOutcome::with_failure(
                 completed,
-                first_object,
+                first_object.clone(),
                 anyhow::Error::new(error)
                     .context("failed to begin parallel export snapshot transaction"),
             );
@@ -66,26 +66,28 @@ pub async fn export_worker(
             let _ = client.batch_execute("ROLLBACK").await;
             return ExportWorkerOutcome::with_failure(
                 completed,
-                first_object,
+                first_object.clone(),
                 error.context("failed to set parallel export snapshot"),
             );
         }
     }
 
     for (index, object) in tasks {
-        last_object = Some(object.clone());
         let started_at = Instant::now();
         match export_object(&client, scratch_dir, index, &object, data_format)
             .await
             .with_context(|| format!("export object {} failed", object.source_label()))
         {
-            Ok(manifest_object) => completed.push((
-                index,
-                ExportObjectResult {
-                    manifest_object,
-                    elapsed: started_at.elapsed(),
-                },
-            )),
+            Ok(manifest_object) => {
+                completed.push((
+                    index,
+                    ExportObjectResult {
+                        manifest_object,
+                        elapsed: started_at.elapsed(),
+                    },
+                ));
+                last_object = Some(object);
+            }
             Err(error) => {
                 if snapshot_id.is_some() {
                     let _ = client.batch_execute("ROLLBACK").await;

@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::env_dsn::ConnectionOverrides;
 use crate::select_dsl::{ProjectionKind, SelectDsl};
-use crate::sql::{Identifier, quote_ident};
+use crate::sql::{Identifier, quoted_fq_name};
 use crate::types::{DataFormat, ExportAs};
 
 /// Значение порта в TOML: может быть целым числом или строкой с `{VAR_NAME}`.
@@ -50,9 +50,7 @@ pub struct TargetOverride {
 /// Описание одного объекта экспорта.
 #[derive(Debug, Clone)]
 pub struct ObjectConfig {
-    /// Исходная строка DSL (полезно для ошибок и дебага).
-    pub select_raw: String,
-    /// Распарсенная и нормализованная форма `select_raw`.
+    /// Распарсенная форма DSL с исходной строкой для ошибок и дебага.
     pub select: SelectDsl,
     /// Явное переименование target-объекта.
     pub target: Option<TargetOverride>,
@@ -74,16 +72,11 @@ impl ObjectConfig {
     }
 
     pub fn from_dependency(schema: &str, name: &str) -> Result<Self> {
-        let select_raw = format!(
-            "select * from {}.{}",
-            quote_ident(schema),
-            quote_ident(name),
-        );
+        let select_raw = format!("select * from {}", quoted_fq_name(schema, name));
         let select = SelectDsl::parse(&select_raw).with_context(|| {
             format!("failed to build dependency select for source relation {schema}.{name}")
         })?;
         Ok(Self {
-            select_raw,
             select,
             target: None,
             export_as: ExportAs::Table,
@@ -104,19 +97,27 @@ struct RawConnection {
 impl RawConnection {
     /// Разрешает `{VAR_NAME}` в значениях и возвращает нормализованные переопределения.
     fn resolve(&self) -> Result<Option<ConnectionOverrides>> {
-        let host = self
-            .host
-            .as_deref()
-            .map(interpolate_env)
-            .transpose()?
-            .flatten();
+        self.resolve_with_env(|name| std::env::var(name).unwrap_or_default())
+    }
+
+    fn resolve_with_env(
+        &self,
+        mut env_value: impl FnMut(&str) -> String,
+    ) -> Result<Option<ConnectionOverrides>> {
+        let mut resolve = |value: Option<&str>| {
+            value
+                .map(|value| interpolate_env(value, &mut env_value))
+                .transpose()
+                .map(Option::flatten)
+        };
+        let host = resolve(self.host.as_deref())?;
 
         let port = match &self.port {
             Some(PortValue::Integer(p)) => Some(
                 NonZeroU16::new(*p)
                     .ok_or_else(|| anyhow::anyhow!("connection.port must be non-zero"))?,
             ),
-            Some(PortValue::String(s)) => interpolate_env(s)?
+            Some(PortValue::String(s)) => resolve(Some(s))?
                 .map(|s| {
                     let p: u16 = s
                         .parse()
@@ -128,26 +129,9 @@ impl RawConnection {
             None => None,
         };
 
-        let dbname = self
-            .dbname
-            .as_deref()
-            .map(interpolate_env)
-            .transpose()?
-            .flatten();
-
-        let user = self
-            .user
-            .as_deref()
-            .map(interpolate_env)
-            .transpose()?
-            .flatten();
-
-        let password = self
-            .password
-            .as_deref()
-            .map(interpolate_env)
-            .transpose()?
-            .flatten();
+        let dbname = resolve(self.dbname.as_deref())?;
+        let user = resolve(self.user.as_deref())?;
+        let password = resolve(self.password.as_deref())?;
 
         if host.is_none()
             && port.is_none()
@@ -217,35 +201,29 @@ const fn default_true() -> bool {
 ///
 /// Если переменная не установлена — подставляется пустая строка.
 /// Если после интерполяции результат пуст — возвращается `None`.
-fn interpolate_env(value: &str) -> Result<Option<String>> {
+fn interpolate_env(
+    value: &str,
+    mut env_value: impl FnMut(&str) -> String,
+) -> Result<Option<String>> {
     let mut result = String::with_capacity(value.len());
-    let mut chars = value.chars();
-
-    while let Some(ch) = chars.next() {
-        if ch == '{' {
-            let mut var_name = String::new();
-            loop {
-                match chars.next() {
-                    Some('}') => break,
-                    Some(c) => var_name.push(c),
-                    None => {
-                        bail!("unclosed '{{' in connection config value '{value}'");
-                    }
-                }
-            }
-            let var_value = std::env::var(&var_name).unwrap_or_default();
-            result.push_str(&var_value);
-        } else {
-            result.push(ch);
-        }
+    let mut rest = value;
+    while let Some((before, after)) = rest.split_once('{') {
+        result.push_str(before);
+        let Some((name, after)) = after.split_once('}') else {
+            bail!("unclosed '{{' in connection config value '{value}'");
+        };
+        result.push_str(&env_value(name));
+        rest = after;
     }
+    result.push_str(rest);
 
-    let trimmed = result.trim().to_owned();
-    if trimmed.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(trimmed))
+    let trimmed_len = result.trim_end().len();
+    result.truncate(trimmed_len);
+    let leading_ws = result.len() - result.trim_start().len();
+    if leading_ws != 0 {
+        result.drain(..leading_ws);
     }
+    Ok((!result.is_empty()).then_some(result))
 }
 
 const fn default_data_format() -> DataFormat {
@@ -294,7 +272,6 @@ pub fn load(path: &Path) -> Result<Config> {
         validate_view_export_select(index, object.export_as, &select)?;
 
         objects.push(ObjectConfig {
-            select_raw: select_raw.to_owned(),
             select,
             target,
             export_as: object.export_as,
@@ -360,10 +337,7 @@ fn validate_view_export_select(
             "config validation error: objects[{index}] export_as='view' requires 'select * from schema.object'"
         );
     }
-    if select.where_clause.is_some()
-        || select.order_by_clause.is_some()
-        || select.limit_clause.is_some()
-    {
+    if select.has_clauses() {
         bail!(
             "config validation error: objects[{index}] export_as='view' does not allow WHERE/ORDER BY/LIMIT"
         );
@@ -374,108 +348,64 @@ fn validate_view_export_select(
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
-    use std::num::NonZeroU16;
+    use std::{io::Write, num::NonZeroU16};
 
-    use super::{ExportAs, load};
+    use super::{Config, ExportAs, RawConnection, interpolate_env, load};
 
-    fn write_temp_config(raw: &str) -> tempfile::NamedTempFile {
+    fn load_config(raw: &str) -> anyhow::Result<Config> {
         let mut file = tempfile::NamedTempFile::new().expect("temp file must be created");
         file.write_all(raw.as_bytes())
             .expect("config file must be written");
-        file.flush().expect("config file must be flushed");
-        file
+        load(file.path())
+    }
+
+    fn connection_config(raw: &str) -> anyhow::Result<Config> {
+        load_config(&format!(
+            "[connection]\n{raw}\n[[objects]]\nselect = 'select * from public.orders'"
+        ))
     }
 
     #[test]
-    fn defaults_export_as_to_table() {
-        let file = write_temp_config(
-            r#"
-            [general]
-            compression = "zstd"
-
-            [[objects]]
-            select = "select * from public.orders"
-            "#,
-        );
-
-        let config = load(file.path()).expect("config should parse");
+    fn applies_defaults_without_connection() {
+        let config = load_config("[[objects]]\nselect = 'select * from public.orders'")
+            .expect("config should parse");
         assert_eq!(config.objects.len(), 1);
         assert_eq!(config.objects[0].export_as, ExportAs::Table);
-    }
-
-    #[test]
-    fn rejects_view_export_with_where_clause() {
-        let file = write_temp_config(
-            r#"
-            [general]
-            compression = "zstd"
-
-            [[objects]]
-            select = "select * from reporting.v_sales where id > 10"
-            export_as = "view"
-            "#,
-        );
-
-        let error = load(file.path()).expect_err("invalid view config must fail");
+        assert!(config.connection.is_none());
         assert!(
-            error
-                .to_string()
-                .contains("export_as='view' does not allow WHERE/ORDER BY/LIMIT")
+            connection_config("")
+                .expect("empty connection must parse")
+                .connection
+                .is_none()
         );
     }
 
     #[test]
-    fn connection_section_absent_is_none() {
-        let file = write_temp_config(
-            r#"
-            [general]
-            compression = "zstd"
-
-            [[objects]]
-            select = "select * from public.orders"
-            "#,
-        );
-        let config = load(file.path()).expect("config should parse");
-        assert!(config.connection.is_none());
+    fn rejects_view_export_with_clauses_or_projection() {
+        for (select, message) in [
+            (
+                "select * from reporting.v_sales where id > 10",
+                "does not allow WHERE/ORDER BY/LIMIT",
+            ),
+            (
+                "select id from reporting.v_sales",
+                "requires 'select * from schema.object'",
+            ),
+        ] {
+            let error = load_config(&format!(
+                "[[objects]]\nselect = '{select}'\nexport_as = 'view'"
+            ))
+            .expect_err("invalid view config must fail");
+            assert!(error.to_string().contains(message), "{error}");
+        }
     }
 
     #[test]
-    fn connection_section_empty_is_none() {
-        let file = write_temp_config(
-            r#"
-            [general]
-            compression = "zstd"
-
-            [connection]
-
-            [[objects]]
-            select = "select * from public.orders"
-            "#,
-        );
-        let config = load(file.path()).expect("config should parse");
-        assert!(config.connection.is_none());
-    }
-
-    #[test]
-    fn connection_explicit_values() {
-        let file = write_temp_config(
-            r#"
-            [general]
-            compression = "zstd"
-
-            [connection]
-            host = "db.example.com"
-            port = 5433
-            dbname = "mydb"
-            user = "myuser"
-            password = "secret"
-
-            [[objects]]
-            select = "select * from public.orders"
-            "#,
-        );
-        let config = load(file.path()).expect("config should parse");
+    fn resolves_explicit_connection_values() {
+        let config = connection_config(
+            "host = 'db.example.com'\nport = 5433\ndbname = 'mydb'\nuser = 'myuser'\npassword = 'secret'",
+        )
+        .expect("config should parse");
         let conn = config
             .connection
             .expect("connection section must be present");
@@ -487,21 +417,9 @@ mod tests {
     }
 
     #[test]
-    fn connection_partial_fields() {
-        let file = write_temp_config(
-            r#"
-            [general]
-            compression = "zstd"
-
-            [connection]
-            host = "db.example.com"
-            dbname = "mydb"
-
-            [[objects]]
-            select = "select * from public.orders"
-            "#,
-        );
-        let config = load(file.path()).expect("config should parse");
+    fn resolves_partial_connection_values() {
+        let config = connection_config("host = '  db.example.com  '\ndbname = 'mydb'")
+            .expect("config should parse");
         let conn = config
             .connection
             .expect("connection section must be present");
@@ -513,144 +431,76 @@ mod tests {
     }
 
     #[test]
-    fn connection_port_as_string_with_env_var() {
-        unsafe { std::env::set_var("PGCOPY_TEST_PORT", "9876") };
-        let file = write_temp_config(
-            r#"
-            [general]
-            compression = "zstd"
-
-            [connection]
-            port = "{PGCOPY_TEST_PORT}"
-
-            [[objects]]
-            select = "select * from public.orders"
-            "#,
-        );
-        let config = load(file.path()).expect("config should parse");
-        let conn = config
-            .connection
-            .expect("connection section must be present");
-        assert_eq!(conn.port.map(NonZeroU16::get), Some(9876));
-        unsafe { std::env::remove_var("PGCOPY_TEST_PORT") };
+    fn accepts_integer_and_string_ports_and_rejects_zero() {
+        for port in ["5433", "'5433'"] {
+            let conn = connection_config(&format!("port = {port}"))
+                .expect("port must parse")
+                .connection
+                .expect("connection must be present");
+            assert_eq!(conn.port.map(NonZeroU16::get), Some(5433));
+        }
+        for port in ["0", "'0'"] {
+            let error =
+                connection_config(&format!("port = {port}")).expect_err("zero port must fail");
+            assert!(
+                error
+                    .to_string()
+                    .contains("connection.port must be non-zero")
+            );
+        }
     }
 
     #[test]
-    fn connection_port_zero_rejected() {
-        let file = write_temp_config(
-            r#"
-            [general]
-            compression = "zstd"
-
-            [connection]
-            port = 0
-
-            [[objects]]
-            select = "select * from public.orders"
-            "#,
-        );
-        let error = load(file.path()).expect_err("zero port must fail");
-        assert!(
-            error
-                .to_string()
-                .contains("connection.port must be non-zero")
-        );
-    }
-
-    #[test]
-    fn connection_env_var_in_value() {
-        unsafe { std::env::set_var("PGCOPY_TEST_HOST", "myhost.example.com") };
-        let file = write_temp_config(
-            r#"
-            [general]
-            compression = "zstd"
-
-            [connection]
-            host = "{PGCOPY_TEST_HOST}"
-            dbname = "app_{PGCOPY_TEST_HOST}"
-
-            [[objects]]
-            select = "select * from public.orders"
-            "#,
-        );
-        let config = load(file.path()).expect("config should parse");
-        let conn = config
-            .connection
-            .expect("connection section must be present");
+    fn resolves_environment_values_and_omits_missing_values() {
+        let raw: RawConnection = toml::from_str(
+            "host = '{HOST}'\nport = '{PORT}'\ndbname = 'app_{HOST}'\nuser = '{MISSING}'",
+        )
+        .expect("connection must parse");
+        let conn = raw
+            .resolve_with_env(|name| match name {
+                "HOST" => "myhost.example.com".to_owned(),
+                "PORT" => "6543".to_owned(),
+                _ => String::new(),
+            })
+            .expect("connection must resolve")
+            .expect("connection must be present");
         assert_eq!(conn.host.as_deref(), Some("myhost.example.com"));
-        assert_eq!(conn.dbname.as_deref(), Some("app_myhost.example.com"));
-        unsafe { std::env::remove_var("PGCOPY_TEST_HOST") };
-    }
-
-    #[test]
-    fn connection_env_var_not_set_yields_none() {
-        // Убедимся, что переменная не установлена.
-        unsafe { std::env::remove_var("PGCOPY_TEST_NOT_SET") };
-        let file = write_temp_config(
-            r#"
-            [general]
-            compression = "zstd"
-
-            [connection]
-            host = "{PGCOPY_TEST_NOT_SET}"
-            dbname = "mydb"
-
-            [[objects]]
-            select = "select * from public.orders"
-            "#,
-        );
-        let config = load(file.path()).expect("config should parse");
-        let conn = config
-            .connection
-            .expect("connection section must be present");
-        assert!(conn.host.is_none(), "host should be none for unset env var");
-        assert_eq!(conn.dbname.as_deref(), Some("mydb"));
-    }
-
-    #[test]
-    fn connection_env_var_port_from_string() {
-        unsafe { std::env::set_var("PGCOPY_TEST_PORT_STR", "6543") };
-        let file = write_temp_config(
-            r#"
-            [general]
-            compression = "zstd"
-
-            [connection]
-            port = "{PGCOPY_TEST_PORT_STR}"
-
-            [[objects]]
-            select = "select * from public.orders"
-            "#,
-        );
-        let config = load(file.path()).expect("config should parse");
-        let conn = config
-            .connection
-            .expect("connection section must be present");
         assert_eq!(conn.port.map(NonZeroU16::get), Some(6543));
-        unsafe { std::env::remove_var("PGCOPY_TEST_PORT_STR") };
+        assert_eq!(conn.dbname.as_deref(), Some("app_myhost.example.com"));
+        assert!(conn.user.is_none());
+        assert!(conn.password.is_none());
+
+        let raw: RawConnection =
+            toml::from_str("host = '{HOST}'\nport = '{PORT}'").expect("connection must parse");
+        assert!(
+            raw.resolve_with_env(|_| String::new())
+                .expect("missing values must resolve")
+                .is_none()
+        );
     }
 
     #[test]
-    fn connection_env_var_port_not_set_yields_none() {
-        unsafe { std::env::remove_var("PGCOPY_TEST_PORT_MISSING") };
-        let file = write_temp_config(
-            r#"
-            [general]
-            compression = "zstd"
-
-            [connection]
-            port = "{PGCOPY_TEST_PORT_MISSING}"
-            dbname = "mydb"
-
-            [[objects]]
-            select = "select * from public.orders"
-            "#,
-        );
-        let config = load(file.path()).expect("config should parse");
-        let conn = config
-            .connection
-            .expect("connection section must be present");
-        assert!(conn.port.is_none(), "port should be none for unset env var");
-        assert_eq!(conn.dbname.as_deref(), Some("mydb"));
+    fn interpolation_preserves_literals_and_trims_only_result() {
+        for (input, expected) in [
+            ("  хост  ", Some("хост")),
+            ("  {A}  ", Some("значение")),
+            ("a{A}{MISSING}}z", Some("a значение }z")),
+            ("{MISSING}", None),
+            ("   ", None),
+            ("", None),
+        ] {
+            let value = interpolate_env(input, |name| {
+                if name == "A" {
+                    " значение ".to_owned()
+                } else {
+                    String::new()
+                }
+            })
+            .expect("interpolation must succeed");
+            assert_eq!(value.as_deref(), expected, "input: {input:?}");
+        }
+        let error = interpolate_env("prefix{UNCLOSED", |_| String::new())
+            .expect_err("unclosed interpolation must fail");
+        assert!(error.to_string().contains("unclosed '{'"));
     }
 }

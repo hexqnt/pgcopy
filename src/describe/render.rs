@@ -96,17 +96,18 @@ fn render_markdown_relation(
             .expect("writing to string is infallible");
     }
 
-    let ddl = render_relation_ddl(relation, false);
+    let mut ddl = String::new();
+    render_relation_ddl(&mut ddl, relation, false);
     let fence = markdown_fence(&ddl);
     writeln!(output, "{fence}sql\n{}\n{fence}\n", ddl.trim_end())
         .expect("writing to string is infallible");
 
-    let detailed_columns = relation
+    let mut detailed_columns = relation
         .columns
         .iter()
         .filter(|column| column.comment.is_some() || !column.enum_values.is_empty())
-        .collect::<Vec<_>>();
-    if !detailed_columns.is_empty() {
+        .peekable();
+    if detailed_columns.peek().is_some() {
         output.push_str("Column details:\n\n");
         for column in detailed_columns {
             write!(output, "- {}", inline_code(&column.name))
@@ -152,12 +153,12 @@ fn render_markdown_statistics(output: &mut String, relation: &RelationDescriptio
         return;
     }
 
-    let columns = relation
+    let mut columns = relation
         .columns
         .iter()
         .filter_map(|column| column.statistics.as_ref().map(|stats| (column, stats)))
-        .collect::<Vec<_>>();
-    if columns.is_empty() {
+        .peekable();
+    if columns.peek().is_none() {
         return;
     }
     output.push_str(
@@ -172,12 +173,12 @@ fn render_markdown_statistics(output: &mut String, relation: &RelationDescriptio
             format_percentage(statistics.null_fraction)
         )
         .expect("writing to string is infallible");
-        let estimated_distinct = statistics.estimated_distinct.map_or_else(
-            || "unknown".to_owned(),
-            |value| format!("~{}", format_number(value)),
-        );
-        writeln!(output, "  - estimated distinct: {estimated_distinct}")
-            .expect("writing to string is infallible");
+        writeln!(
+            output,
+            "  - estimated distinct: {}",
+            format_distinct(statistics.estimated_distinct)
+        )
+        .expect("writing to string is infallible");
         writeln!(
             output,
             "  - average width: {} bytes",
@@ -222,7 +223,7 @@ fn render_sql(description: &DatabaseDescription) -> String {
 
     for relation in &description.relations {
         output.push('\n');
-        output.push_str(&render_relation_ddl(relation, true));
+        render_relation_ddl(&mut output, relation, true);
         if description.profile == ProfileMode::Statistics {
             push_sql_statistics(&mut output, relation);
         }
@@ -230,8 +231,11 @@ fn render_sql(description: &DatabaseDescription) -> String {
     output
 }
 
-fn render_relation_ddl(relation: &RelationDescription, include_comments: bool) -> String {
-    let mut output = String::new();
+fn render_relation_ddl(
+    output: &mut String,
+    relation: &RelationDescription,
+    include_comments: bool,
+) {
     let relation_name = quoted_fq_name(&relation.schema, &relation.name);
     for column in &relation.columns {
         if column.enum_values.is_empty() {
@@ -244,7 +248,7 @@ fn render_relation_ddl(relation: &RelationDescription, include_comments: bool) -
             .collect::<Vec<_>>()
             .join(", ");
         push_sql_comment(
-            &mut output,
+            output,
             &format!(
                 "Enum values for {relation_name}.{}: {values}",
                 quote_ident(&column.name)
@@ -255,24 +259,18 @@ fn render_relation_ddl(relation: &RelationDescription, include_comments: bool) -
         RelationKind::Table => {
             writeln!(output, "CREATE TABLE {relation_name} (")
                 .expect("writing to string is infallible");
-            let mut definitions = relation
-                .columns
-                .iter()
-                .map(render_column_definition)
-                .collect::<Vec<_>>();
-            definitions.extend(relation.constraints.iter().map(|constraint| {
-                format!(
-                    "CONSTRAINT {} {}",
-                    quote_ident(&constraint.name),
-                    constraint.definition
-                )
-            }));
-            for (index, definition) in definitions.iter().enumerate() {
-                let separator = if index + 1 == definitions.len() {
-                    ""
-                } else {
-                    ","
-                };
+            let definitions = relation.columns.iter().map(render_column_definition).chain(
+                relation.constraints.iter().map(|constraint| {
+                    format!(
+                        "CONSTRAINT {} {}",
+                        quote_ident(&constraint.name),
+                        constraint.definition
+                    )
+                }),
+            );
+            let mut separator = "";
+            for definition in definitions {
+                output.push_str(separator);
                 for (line_index, line) in definition.lines().enumerate() {
                     if line_index == 0 {
                         write!(output, "    {line}").expect("writing to string is infallible");
@@ -281,7 +279,10 @@ fn render_relation_ddl(relation: &RelationDescription, include_comments: bool) -
                             .expect("writing to string is infallible");
                     }
                 }
-                writeln!(output, "{separator}").expect("writing to string is infallible");
+                separator = ",\n";
+            }
+            if !separator.is_empty() {
+                output.push('\n');
             }
             output.push_str(");\n");
         }
@@ -306,9 +307,8 @@ fn render_relation_ddl(relation: &RelationDescription, include_comments: bool) -
     }
 
     if include_comments {
-        render_comment_ddl(&mut output, relation, &relation_name);
+        render_comment_ddl(output, relation, &relation_name);
     }
-    output
 }
 
 fn render_column_definition(column: &ColumnDescription) -> String {
@@ -381,17 +381,13 @@ fn push_sql_statistics(output: &mut String, relation: &RelationDescription) {
         let Some(statistics) = column.statistics.as_ref() else {
             continue;
         };
-        let estimated_distinct = statistics.estimated_distinct.map_or_else(
-            || "unknown".to_owned(),
-            |value| format!("~{}", format_number(value)),
-        );
         push_sql_comment(
             output,
             &format!(
                 "Statistics for {}: nulls={}, estimated distinct={}, average width={} bytes",
                 column.name,
                 format_percentage(statistics.null_fraction),
-                estimated_distinct,
+                format_distinct(statistics.estimated_distinct),
                 statistics.average_width_bytes,
             ),
         );
@@ -472,6 +468,13 @@ fn format_number(value: f64) -> String {
     }
 }
 
+fn format_distinct(value: Option<f64>) -> String {
+    value.map_or_else(
+        || "unknown".to_owned(),
+        |value| format!("~{}", format_number(value)),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{inline_code, normalize_markdown_eof, quote_literal, render_relation_ddl};
@@ -488,18 +491,32 @@ mod tests {
             name: "orders".to_owned(),
             kind: RelationKind::Table,
             comment: Some("Customer's orders".to_owned()),
-            columns: vec![ColumnDescription {
-                name: "id".to_owned(),
-                type_sql: "bigint".to_owned(),
-                nullable: false,
-                default_expression: None,
-                identity: Some(IdentityGeneration::ByDefault),
-                generated: None,
-                comment: Some("Identifier".to_owned()),
-                enum_values: Vec::new(),
-                statistics: None,
-                binary: false,
-            }],
+            columns: vec![
+                ColumnDescription {
+                    name: "id".to_owned(),
+                    type_sql: "bigint".to_owned(),
+                    nullable: false,
+                    default_expression: None,
+                    identity: Some(IdentityGeneration::ByDefault),
+                    generated: None,
+                    comment: Some("Identifier".to_owned()),
+                    enum_values: Vec::new(),
+                    statistics: None,
+                    binary: false,
+                },
+                ColumnDescription {
+                    name: "state".to_owned(),
+                    type_sql: "text".to_owned(),
+                    nullable: true,
+                    default_expression: Some("('new'::text ||\n' order'::text)".to_owned()),
+                    identity: None,
+                    generated: None,
+                    comment: None,
+                    enum_values: Vec::new(),
+                    statistics: None,
+                    binary: false,
+                },
+            ],
             constraints: vec![ConstraintDescription {
                 name: "orders_pkey".to_owned(),
                 kind: ConstraintKind::PrimaryKey,
@@ -511,11 +528,20 @@ mod tests {
             statistics_status: None,
         };
 
-        let ddl = render_relation_ddl(&relation, true);
-        assert!(ddl.contains("\"id\" bigint GENERATED BY DEFAULT AS IDENTITY NOT NULL"));
-        assert!(ddl.contains("CONSTRAINT \"orders_pkey\" PRIMARY KEY (id)"));
-        assert!(ddl.contains("COMMENT ON TABLE \"public\".\"orders\" IS 'Customer''s orders';"));
-        assert!(ddl.contains("COMMENT ON COLUMN \"public\".\"orders\".\"id\" IS 'Identifier';"));
+        let mut ddl = String::new();
+        render_relation_ddl(&mut ddl, &relation, true);
+        assert_eq!(
+            ddl,
+            concat!(
+                "CREATE TABLE \"public\".\"orders\" (\n",
+                "    \"id\" bigint GENERATED BY DEFAULT AS IDENTITY NOT NULL,\n",
+                "    \"state\" text DEFAULT ('new'::text ||\n        ' order'::text),\n",
+                "    CONSTRAINT \"orders_pkey\" PRIMARY KEY (id)\n",
+                ");\n",
+                "COMMENT ON TABLE \"public\".\"orders\" IS 'Customer''s orders';\n",
+                "COMMENT ON COLUMN \"public\".\"orders\".\"id\" IS 'Identifier';\n",
+            )
+        );
     }
 
     #[test]

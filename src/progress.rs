@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -17,7 +18,7 @@ pub(crate) struct ProgressUi {
 }
 
 impl ProgressUi {
-    pub(crate) fn new(total: u64, enabled: bool, initial_message: &str) -> Self {
+    pub(crate) fn new(total: u64, enabled: bool, initial_message: &'static str) -> Self {
         let draw_target = if enabled {
             ProgressDrawTarget::stderr_with_hz(8)
         } else {
@@ -32,13 +33,13 @@ impl ProgressUi {
             .expect("valid overall progress template")
             .progress_chars("=>-"),
         );
-        bar.set_message(initial_message.to_owned());
+        bar.set_message(initial_message);
 
         Self { bar }
     }
 
-    pub(crate) fn set_message(&self, message: impl Into<String>) {
-        self.bar.set_message(message.into());
+    pub(crate) fn set_message(&self, message: impl Into<Cow<'static, str>>) {
+        self.bar.set_message(message);
     }
 
     pub(crate) fn inc(&self, delta: u64) {
@@ -49,17 +50,30 @@ impl ProgressUi {
         self.bar.println(format_status_line(label, status, tone));
     }
 
-    pub(crate) fn finish_with_message(&self, message: impl Into<String>) {
-        self.bar.finish_with_message(message.into());
+    pub(crate) fn set_object_done(&self, schema: &str, name: &str, status: &str) {
+        let label = format!("{schema}.{name}");
+        self.inc(1);
+        self.set_message(format!("done {label}"));
+        self.print_status_line(&label, status, StatusTone::Success);
     }
 
-    pub(crate) fn abandon_with_message(&self, message: impl Into<String>) {
-        self.bar.abandon_with_message(message.into());
+    pub(crate) fn set_object_error(&self, schema: &str, name: &str, error: &dyn std::error::Error) {
+        let label = format!("{schema}.{name}");
+        self.set_message(format!("failed {label}"));
+        self.print_status_line(
+            &label,
+            &format!("[x] error: {}", one_line_error(error)),
+            StatusTone::Error,
+        );
     }
-}
 
-pub(crate) fn object_label(schema: &str, name: &str) -> String {
-    format!("{schema}.{name}")
+    pub(crate) fn finish_with_message(&self, message: impl Into<Cow<'static, str>>) {
+        self.bar.finish_with_message(message);
+    }
+
+    pub(crate) fn abandon_with_message(&self, message: impl Into<Cow<'static, str>>) {
+        self.bar.abandon_with_message(message);
+    }
 }
 
 pub(crate) fn one_line_error(error: &dyn std::error::Error) -> String {
@@ -94,44 +108,63 @@ pub(crate) fn format_duration_compact(elapsed: Duration) -> String {
 }
 
 fn format_status_line(label: &str, status: &str, tone: StatusTone) -> String {
-    let status = truncate_text(status, STATUS_WIDTH);
-    let status = colorize_status(&status, tone);
+    let color = match tone {
+        StatusTone::Success => "\x1b[32m",
+        StatusTone::Error => "\x1b[31m",
+    };
     format!(
-        "{:<width$} {}",
+        "{:<width$} {color}{}\x1b[0m",
         truncate_text(label, OBJECT_LABEL_WIDTH),
-        status,
+        truncate_text(status, STATUS_WIDTH),
         width = OBJECT_LABEL_WIDTH
     )
 }
 
-fn colorize_status(value: &str, tone: StatusTone) -> String {
-    const RESET: &str = "\x1b[0m";
-    match tone {
-        StatusTone::Success => format!("\x1b[32m{value}{RESET}"),
-        StatusTone::Error => format!("\x1b[31m{value}{RESET}"),
-    }
-}
-
-fn truncate_text(value: &str, width: usize) -> String {
+fn truncate_text(value: &str, width: usize) -> Cow<'_, str> {
     let len = value.chars().count();
     if len <= width {
-        return value.to_owned();
+        return Cow::Borrowed(value);
     }
 
     if width <= 3 {
-        return value.chars().take(width).collect();
+        return Cow::Owned(value.chars().take(width).collect());
     }
 
     let mut out = value.chars().take(width - 3).collect::<String>();
     out.push_str("...");
-    out
+    Cow::Owned(out)
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
-    use super::format_duration_compact;
+    use super::{StatusTone, format_duration_compact, format_status_line, truncate_text};
+
+    #[test]
+    fn truncates_unicode_at_character_boundaries() {
+        for (value, width, expected) in [
+            ("", 0, ""),
+            ("table", 0, ""),
+            ("table", 3, "tab"),
+            ("таблица", 5, "та..."),
+            ("таблица", 7, "таблица"),
+        ] {
+            assert_eq!(truncate_text(value, width), expected);
+        }
+    }
+
+    #[test]
+    fn status_line_preserves_padding_colors_and_width_limits() {
+        assert_eq!(
+            format_status_line("table", "done", StatusTone::Success),
+            format!("{:<42} \x1b[32mdone\x1b[0m", "table")
+        );
+        assert_eq!(
+            format_status_line(&"я".repeat(43), &"e".repeat(41), StatusTone::Error),
+            format!("{}... \x1b[31m{}...\x1b[0m", "я".repeat(39), "e".repeat(37))
+        );
+    }
 
     #[test]
     fn formats_duration_under_one_second_as_milliseconds() {

@@ -18,7 +18,12 @@ where
         return operation(None).await;
     }
 
-    begin_consistent_snapshot_transaction(client).await?;
+    execute_snapshot_transaction_statement(
+        client,
+        "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+        "begin",
+    )
+    .await?;
     let snapshot_id = if export_snapshot_for_workers {
         Some(export_snapshot_id(client).await?)
     } else {
@@ -27,31 +32,14 @@ where
 
     match operation(snapshot_id).await {
         Ok(value) => {
-            commit_consistent_snapshot_transaction(client).await?;
+            execute_snapshot_transaction_statement(client, "COMMIT", "commit").await?;
             Ok(value)
         }
         Err(error) => {
-            let _ = rollback_consistent_snapshot_transaction(client).await;
+            let _ = execute_snapshot_transaction_statement(client, "ROLLBACK", "rollback").await;
             Err(error)
         }
     }
-}
-
-async fn begin_consistent_snapshot_transaction(client: &tokio_postgres::Client) -> Result<()> {
-    execute_snapshot_transaction_statement(
-        client,
-        "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
-        "begin",
-    )
-    .await
-}
-
-async fn commit_consistent_snapshot_transaction(client: &tokio_postgres::Client) -> Result<()> {
-    execute_snapshot_transaction_statement(client, "COMMIT", "commit").await
-}
-
-async fn rollback_consistent_snapshot_transaction(client: &tokio_postgres::Client) -> Result<()> {
-    execute_snapshot_transaction_statement(client, "ROLLBACK", "rollback").await
 }
 
 async fn export_snapshot_id(client: &tokio_postgres::Client) -> Result<String> {

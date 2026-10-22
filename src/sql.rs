@@ -58,7 +58,18 @@ pub fn quoted_fq_name(schema: &str, name: &str) -> String {
     quoted
 }
 
-fn push_quoted_ident(output: &mut String, value: &str) {
+/// Добавляет список экранированных идентификаторов без промежуточных строк.
+pub(crate) fn push_quoted_ident_list(output: &mut String, columns: &[String]) {
+    if let Some((first, rest)) = columns.split_first() {
+        push_quoted_ident(output, first);
+        for column in rest {
+            output.push_str(", ");
+            push_quoted_ident(output, column);
+        }
+    }
+}
+
+pub(crate) fn push_quoted_ident(output: &mut String, value: &str) {
     output.push('"');
     for part in value.split_inclusive('"') {
         output.push_str(part);

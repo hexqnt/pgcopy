@@ -7,7 +7,7 @@ use tokio_postgres::Config;
 /// Переопределения параметров подключения к `PostgreSQL` (из CLI или TOML-конфига).
 ///
 /// Приоритет: CLI → TOML-конфиг (`[connection]`) → переменная окружения → дефолт.
-/// Для пароля: CLI → TOML-конфиг → `.pgpass` → `PGPASSWORD`.
+/// Для пароля: CLI → TOML-конфиг → `PGPASSWORD` → `.pgpass`.
 #[derive(Debug, Clone, Default)]
 pub struct ConnectionOverrides {
     pub host: Option<String>,
@@ -20,7 +20,7 @@ pub struct ConnectionOverrides {
 /// Строит конфигурацию подключения к `PostgreSQL`.
 ///
 /// Приоритет для каждого параметра: CLI → TOML-конфиг → переменная окружения → дефолт.
-/// Для пароля: CLI → TOML-конфиг → `~/.pgpass` → `PGPASSWORD`.
+/// Для пароля: CLI → TOML-конфиг → `PGPASSWORD` → `~/.pgpass`.
 ///
 /// `toml_connection` — опциональные переопределения из секции `[connection]` TOML-файла.
 pub(crate) fn build(
@@ -57,7 +57,7 @@ pub(crate) fn build(
         .or_else(|| Some(String::from("postgres")));
     let user = user.or(os_user).or_else(|| Some(String::from("postgres")));
 
-    // Пароль: CLI → TOML → .pgpass → PGPASSWORD.
+    // Пароль: CLI → TOML → PGPASSWORD → .pgpass.
     // Если CLI или TOML явно задали пароль — используем его, не лезем в .pgpass.
     let password = if cli_overrides.password.is_some()
         || toml_connection.is_some_and(|t| t.password.is_some())

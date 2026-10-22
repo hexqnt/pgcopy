@@ -26,8 +26,7 @@ struct TopLevelWordIter<'a> {
     input: &'a str,
     bytes: Peekable<Enumerate<Bytes<'a>>>,
     paren_depth: usize,
-    in_single_quote: bool,
-    in_double_quote: bool,
+    quote: Option<u8>,
 }
 
 impl<'a> TopLevelWordIter<'a> {
@@ -36,8 +35,7 @@ impl<'a> TopLevelWordIter<'a> {
             input,
             bytes: input.bytes().enumerate().peekable(),
             paren_depth: 0,
-            in_single_quote: false,
-            in_double_quote: false,
+            quote: None,
         }
     }
 }
@@ -47,35 +45,20 @@ impl<'a> Iterator for TopLevelWordIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some((index, ch)) = self.bytes.next() {
-            if self.in_single_quote {
-                if ch == b'\'' {
-                    if self.bytes.peek().is_some_and(|(_, next)| *next == b'\'') {
+            if let Some(quote) = self.quote {
+                if ch == quote {
+                    if self.bytes.peek().is_some_and(|(_, next)| *next == quote) {
                         self.bytes.next();
                         continue;
                     }
-                    self.in_single_quote = false;
-                }
-                continue;
-            }
-
-            if self.in_double_quote {
-                if ch == b'"' {
-                    if self.bytes.peek().is_some_and(|(_, next)| *next == b'"') {
-                        self.bytes.next();
-                        continue;
-                    }
-                    self.in_double_quote = false;
+                    self.quote = None;
                 }
                 continue;
             }
 
             match ch {
-                b'\'' => {
-                    self.in_single_quote = true;
-                    continue;
-                }
-                b'"' => {
-                    self.in_double_quote = true;
+                b'\'' | b'"' => {
+                    self.quote = Some(ch);
                     continue;
                 }
                 b'(' => {
@@ -112,10 +95,13 @@ impl<'a> Iterator for TopLevelWordIter<'a> {
 /// Снимает ведущий keyword без учёта регистра.
 pub(super) fn strip_leading_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
     let trimmed = input.trim_start();
-    if !has_keyword_at(trimmed, 0, keyword) {
+    let (prefix, rest) = trimmed.split_at_checked(keyword.len())?;
+    if !prefix.eq_ignore_ascii_case(keyword)
+        || rest.as_bytes().first().is_some_and(|ch| is_word_char(*ch))
+    {
         return None;
     }
-    Some(trimmed[keyword.len()..].trim_start())
+    Some(rest.trim_start())
 }
 
 /// Делит строку по keyword, игнорируя вхождения внутри кавычек.
@@ -141,23 +127,20 @@ pub(super) fn parse_optional_clauses(tail: &str) -> Result<ParsedClauses> {
 
     let mut parsed = ParsedClauses::default();
 
-    if let Some(after_where) = strip_prefix_where(rest) {
-        let (where_clause, remaining) = split_clause(before_next_clause(
-            after_where,
-            &[TailClause::OrderBy, TailClause::Limit],
-        ));
+    if let Some(after_where) = strip_leading_keyword(rest, "where") {
+        let (where_clause, remaining) =
+            before_next_clause(after_where, &[TailClause::OrderBy, TailClause::Limit]);
         parsed.where_clause = Some(parse_non_empty_clause("WHERE", where_clause)?);
         rest = remaining;
     }
 
     if let Some(after_order_by) = strip_prefix_order_by(rest) {
-        let (order_by_clause, remaining) =
-            split_clause(before_next_clause(after_order_by, &[TailClause::Limit]));
+        let (order_by_clause, remaining) = before_next_clause(after_order_by, &[TailClause::Limit]);
         parsed.order_by_clause = Some(parse_non_empty_clause("ORDER BY", order_by_clause)?);
         rest = remaining;
     }
 
-    if let Some(after_limit) = strip_prefix_limit(rest) {
+    if let Some(after_limit) = strip_leading_keyword(rest, "limit") {
         let limit_raw = after_limit.trim();
         if limit_raw.is_empty() {
             bail!("LIMIT value must not be empty");
@@ -183,17 +166,9 @@ pub(super) fn parse_optional_clauses(tail: &str) -> Result<ParsedClauses> {
     Ok(parsed)
 }
 
-fn strip_prefix_where(input: &str) -> Option<&str> {
-    strip_leading_keyword(input, "where")
-}
-
 fn strip_prefix_order_by(input: &str) -> Option<&str> {
     let after_order = strip_leading_keyword(input, "order")?;
     strip_leading_keyword(after_order, "by")
-}
-
-fn strip_prefix_limit(input: &str) -> Option<&str> {
-    strip_leading_keyword(input, "limit")
 }
 
 fn parse_non_empty_clause(name: &str, raw: &str) -> Result<String> {
@@ -204,14 +179,10 @@ fn parse_non_empty_clause(name: &str, raw: &str) -> Result<String> {
     Ok(clause.to_owned())
 }
 
-fn split_clause<'a>((clause, remaining): (&'a str, &'a str)) -> (&'a str, &'a str) {
-    (clause.trim_end(), remaining.trim_start())
-}
-
 fn before_next_clause<'a>(input: &'a str, clauses: &[TailClause]) -> (&'a str, &'a str) {
     if let Some(index) = find_next_clause_start(input, clauses) {
         let (before, after) = input.split_at(index);
-        return (before, after);
+        return (before.trim_end(), after.trim_start());
     }
 
     (input, "")
@@ -236,36 +207,6 @@ fn find_next_clause_start(input: &str, clauses: &[TailClause]) -> Option<usize> 
     }
 
     None
-}
-
-fn has_keyword_at(input: &str, index: usize, keyword: &str) -> bool {
-    if index + keyword.len() > input.len() {
-        return false;
-    }
-
-    if !input[index..index + keyword.len()].eq_ignore_ascii_case(keyword) {
-        return false;
-    }
-
-    let before = if index == 0 {
-        None
-    } else {
-        input.as_bytes()[..index].last().copied()
-    };
-    let after = if index + keyword.len() >= input.len() {
-        None
-    } else {
-        input.as_bytes()[index + keyword.len()..].first().copied()
-    };
-
-    if before.is_some_and(is_word_char) {
-        return false;
-    }
-    if after.is_some_and(is_word_char) {
-        return false;
-    }
-
-    true
 }
 
 const fn is_word_char(ch: u8) -> bool {
