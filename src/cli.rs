@@ -85,6 +85,12 @@ Encrypted bundle:\n\
             help = "Export concurrency (priority: CLI --concurrency > config general.concurrency > PGCOPY_CONCURRENCY env)"
         )]
         concurrency: Option<NonZeroUsize>,
+        #[arg(
+            long,
+            value_name = "MODE",
+            help = "Compress temporary COPY files (none or zstd; overrides general.temp_compression, default: zstd)"
+        )]
+        temp_compression: Option<crate::scratch::TempCompression>,
         #[command(flatten)]
         retry: crate::retry::RetryOptions,
         #[arg(
@@ -311,6 +317,41 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(args.into_iter().chain(arguments)).is_err());
         }
+    }
+
+    #[test]
+    fn export_temp_compression_is_optional_and_typed() {
+        let args = [
+            "pgcopy",
+            "export",
+            "--config",
+            "config.toml",
+            "--out",
+            "bundle.tar.zst",
+        ];
+        for (flags, expected) in [
+            (vec![], None),
+            (
+                vec!["--temp-compression", "none"],
+                Some(crate::scratch::TempCompression::None),
+            ),
+            (
+                vec!["--temp-compression", "zstd"],
+                Some(crate::scratch::TempCompression::Zstd),
+            ),
+        ] {
+            let cli = Cli::try_parse_from(args.into_iter().chain(flags)).unwrap();
+            let Commands::Export {
+                temp_compression, ..
+            } = cli.command
+            else {
+                panic!("expected export");
+            };
+            assert_eq!(temp_compression, expected);
+        }
+        assert!(
+            Cli::try_parse_from(args.into_iter().chain(["--temp-compression", "gzip"])).is_err()
+        );
     }
 
     #[test]

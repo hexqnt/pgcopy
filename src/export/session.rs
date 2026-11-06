@@ -5,17 +5,18 @@ use tempfile::TempDir;
 use tokio_postgres::{Client, NoTls};
 
 use crate::config::ObjectConfig;
-use crate::manifest::ManifestObject;
 use crate::retry::RetryPolicy;
+use crate::scratch::TempCompression;
 use crate::types::DataFormat;
 
-use super::object::export_object;
+use super::object::{ExportedObject, export_object};
 
 #[derive(Clone, Copy)]
 pub(super) struct ExportContext<'a> {
     pub source_config: &'a tokio_postgres::Config,
     pub scratch_dir: &'a Path,
     pub data_format: DataFormat,
+    pub temp_compression: TempCompression,
     pub snapshot_id: Option<&'a str>,
     pub retry: RetryPolicy,
 }
@@ -50,9 +51,9 @@ impl<'a> ExportSession<'a> {
         &mut self,
         index: usize,
         object: &ObjectConfig,
-    ) -> Result<ManifestObject> {
+    ) -> Result<ExportedObject> {
         let context = self.context;
-        let (manifest, attempt_dir, connection) = self
+        let (exported, attempt_dir, connection) = self
             .context
             .retry
             .run(&object.source_label(), || {
@@ -62,14 +63,16 @@ impl<'a> ExportSession<'a> {
         self.connection = Some(connection);
 
         // Публикуем только полностью записанные файлы, за пределами отменяемой попытки.
-        for path in [&manifest.ddl_path, &manifest.data_path] {
+        let manifest = &exported.manifest;
+        let data_path = exported.data.path(Path::new(&manifest.data_path));
+        for path in [Path::new(&manifest.ddl_path), data_path.as_ref()] {
             std::fs::rename(
                 attempt_dir.path().join(path),
                 self.context.scratch_dir.join(path),
             )
-            .with_context(|| format!("failed to publish export file {path}"))?;
+            .with_context(|| format!("failed to publish export file {}", path.display()))?;
         }
-        Ok(manifest)
+        Ok(exported)
     }
 
     async fn export_attempt(
@@ -77,7 +80,7 @@ impl<'a> ExportSession<'a> {
         connection: Option<ExportConnection>,
         index: usize,
         object: &ObjectConfig,
-    ) -> Result<(ManifestObject, TempDir, ExportConnection)> {
+    ) -> Result<(ExportedObject, TempDir, ExportConnection)> {
         // Отдельный каталог исключает гонку с незавершённой файловой операцией Tokio
         // после отмены предыдущей попытки: новые файлы всегда имеют другие inode.
         let attempt_dir = tempfile::tempdir_in(context.scratch_dir)
@@ -111,6 +114,7 @@ impl<'a> ExportSession<'a> {
             index,
             object,
             context.data_format,
+            context.temp_compression,
         )
         .await?;
         if context.snapshot_id.is_some() {

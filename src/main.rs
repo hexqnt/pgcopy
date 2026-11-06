@@ -14,6 +14,7 @@ mod pg;
 mod pgpass;
 mod progress;
 mod retry;
+mod scratch;
 mod select_dsl;
 mod sql;
 mod startup;

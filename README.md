@@ -125,10 +125,19 @@ Run `pgcopy --help` or `pgcopy <command> --help` for the complete CLI reference.
 - `--config`: export configuration file.
 - `--out`: destination bundle path.
 - `--concurrency N`: number of objects exported concurrently. Resolution order: CLI, `general.concurrency`, `PGCOPY_CONCURRENCY`, then `1`.
+- `--temp-compression none|zstd`: compression of temporary COPY files; overrides `general.temp_compression`, which defaults to `zstd`.
 - `--attempts N`: total attempts per object, including the first; defaults to `3`; `1` disables retries.
 - `--retry-delay-ms MS`: delay between attempts in milliseconds; defaults to `1000`; `0` is allowed.
 - `--attempt-timeout-ms MS`: timeout per attempt in milliseconds, including connection setup and export; defaults to `0` (unlimited).
 - `--password`: bundle encryption passphrase; falls back to the `PASSWORD` environment variable.
+
+Export first stages DDL and COPY data in a temporary directory, normally `/tmp/pgcopy-export-*` on Linux. The actual `temp_dir` and `temp_compression` are printed to stderr before exporting objects, including with `--no-progress`; `--quiet` suppresses them. Set `TMPDIR` to choose a different temporary location on Unix. The directory is automatically removed on normal exit, including handled errors. `--dry-run` prints the temporary root without creating a directory.
+
+COPY data is compressed with zstd as it arrives by default, reducing temporary disk usage for compressible data. Use `--temp-compression none` (or `temp_compression = "none"` in `[general]`) to disable temporary compression. DDL files remain plain text. Packing streams the decompressed data into the existing `tar.zst` format, so import needs no additional option. This trades CPU time for disk space; without temporary compression, allow space for the full uncompressed export. The final bundle is always zstd-compressed. During packing, an additional temporary bundle file is written beside `--out` and atomically renamed when complete.
+
+```bash
+TMPDIR=/mnt/scratch pgcopy export --config ./config.toml --out ./bundle.tar.zst --temp-compression zstd
+```
 
 ### `import`
 
@@ -230,6 +239,7 @@ export_as = "view"
 
 - `data_format`: `binary` (default) or `csv`.
 - `compression`: currently `zstd`.
+- `temp_compression`: `zstd` (default) or `none` for temporary COPY files; CLI `--temp-compression` takes priority.
 - `consistent_snapshot`: use a single consistent database snapshot; defaults to `true`.
 - `concurrency`: number of concurrent export workers; defaults to `1`.
 - `attempts`: total export attempts per object; defaults to `3`, minimum `1`.

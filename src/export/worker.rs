@@ -1,9 +1,9 @@
 use std::time::{Duration, Instant};
 
 use crate::config::ObjectConfig;
-use crate::manifest::ManifestObject;
 use crate::parallel_workers::WorkerOutcome;
 
+use super::object::ExportedObject;
 use super::session::{ExportContext, ExportSession};
 
 /// Результат worker-а экспорта:
@@ -12,7 +12,7 @@ pub type ExportWorkerOutcome = WorkerOutcome<ObjectConfig, ExportObjectResult>;
 
 /// Результат экспорта одного объекта внутри worker-а.
 pub struct ExportObjectResult {
-    pub manifest_object: ManifestObject,
+    pub exported: ExportedObject,
     pub elapsed: Duration,
 }
 
@@ -27,11 +27,11 @@ pub async fn export_worker(
     for (index, object) in tasks {
         let started_at = Instant::now();
         match session.export(index, &object).await {
-            Ok(manifest_object) => {
+            Ok(exported) => {
                 completed.push((
                     index,
                     ExportObjectResult {
-                        manifest_object,
+                        exported,
                         elapsed: started_at.elapsed(),
                     },
                 ));

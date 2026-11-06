@@ -1,17 +1,24 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use async_compression::{Level, tokio::write::ZstdEncoder};
 use futures_util::{TryStreamExt, pin_mut};
-use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 
 use crate::config::ObjectConfig;
 use crate::manifest::ManifestObject;
 use crate::pg::{self, ColumnDef, RelationKind};
+use crate::scratch::{ScratchData, TempCompression};
 use crate::types::{DataFormat, ExportAs};
 
 // Укрупняет запись COPY OUT в файл и не создаёт blocking-задачу Tokio
 // для каждого небольшого чанка протокола PostgreSQL.
 const COPY_FILE_BUFFER_SIZE: usize = 1024 * 1024;
+
+pub(super) struct ExportedObject {
+    pub manifest: ManifestObject,
+    pub data: ScratchData,
+}
 
 /// Проверяет, что в manifest нет коллизий целевых имён.
 pub fn validate_target_collisions(objects: &[ManifestObject]) -> Result<()> {
@@ -57,7 +64,8 @@ pub async fn export_object(
     index: usize,
     object: &ObjectConfig,
     data_format: DataFormat,
-) -> Result<ManifestObject> {
+    temp_compression: TempCompression,
+) -> Result<ExportedObject> {
     let source_schema = object.source_schema().to_owned();
     let source_name = object.source_name().to_owned();
 
@@ -128,25 +136,29 @@ pub async fn export_object(
         .await
         .with_context(|| format!("failed to write DDL file {}", ddl_file.display()))?;
 
-    let row_estimate = if object.export_as.requires_data_payload() {
+    let (row_estimate, data) = if object.export_as.requires_data_payload() {
         let copy_out_sql = pg::copy_out_sql(&normalized_select, data_format);
-        write_copy_data(
+        let data = write_copy_data(
             client,
             &copy_out_sql,
             &data_file,
             &source_schema,
             &source_name,
+            temp_compression,
         )
         .await?;
-        pg::row_estimate(client, &source_schema, &source_name).await?
+        (
+            pg::row_estimate(client, &source_schema, &source_name).await?,
+            data,
+        )
     } else {
         tokio::fs::File::create(&data_file)
             .await
             .with_context(|| format!("failed to create data file {}", data_file.display()))?;
-        None
+        (None, ScratchData::Plain)
     };
 
-    Ok(ManifestObject {
+    let manifest = ManifestObject {
         kind: relation_kind,
         export_as: object.export_as,
         source_schema,
@@ -161,7 +173,8 @@ pub async fn export_object(
         effective_column_types,
         column_projection: object.select.projection_kind(),
         row_estimate,
-    })
+    };
+    Ok(ExportedObject { manifest, data })
 }
 
 async fn write_copy_data(
@@ -170,17 +183,41 @@ async fn write_copy_data(
     data_file: &Path,
     source_schema: &str,
     source_name: &str,
-) -> Result<()> {
-    let output = tokio::fs::File::create(data_file)
+    compression: TempCompression,
+) -> Result<ScratchData> {
+    let data_file = compression.path(data_file);
+    let output = tokio::fs::File::create(&data_file)
         .await
         .with_context(|| format!("failed to create data file {}", data_file.display()))?;
-    let mut output = BufWriter::with_capacity(COPY_FILE_BUFFER_SIZE, output);
+    let output = BufWriter::with_capacity(COPY_FILE_BUFFER_SIZE, output);
 
+    match compression {
+        TempCompression::None => {
+            write_copy_stream(client, copy_out_sql, output, source_schema, source_name).await?;
+            Ok(ScratchData::Plain)
+        }
+        TempCompression::Zstd => {
+            let output = ZstdEncoder::with_quality(output, Level::Precise(3));
+            let uncompressed_size =
+                write_copy_stream(client, copy_out_sql, output, source_schema, source_name).await?;
+            Ok(ScratchData::Zstd { uncompressed_size })
+        }
+    }
+}
+
+async fn write_copy_stream<W: AsyncWrite + Unpin>(
+    client: &tokio_postgres::Client,
+    copy_out_sql: &str,
+    mut output: W,
+    source_schema: &str,
+    source_name: &str,
+) -> Result<u64> {
     let copy_stream = client
         .copy_out(copy_out_sql)
         .await
         .with_context(|| format!("failed to execute COPY OUT for {source_schema}.{source_name}"))?;
     pin_mut!(copy_stream);
+    let mut size = 0;
 
     while let Some(chunk) = copy_stream
         .as_mut()
@@ -188,16 +225,16 @@ async fn write_copy_data(
         .await
         .with_context(|| format!("failed to read COPY OUT for {source_schema}.{source_name}"))?
     {
-        output
-            .write_all(&chunk)
-            .await
-            .with_context(|| format!("failed to write data file {}", data_file.display()))?;
+        output.write_all(&chunk).await.with_context(|| {
+            format!("failed to write COPY data for {source_schema}.{source_name}")
+        })?;
+        size += chunk.len() as u64;
     }
 
-    output
-        .flush()
-        .await
-        .with_context(|| format!("failed to flush data file {}", data_file.display()))
+    output.shutdown().await.with_context(|| {
+        format!("failed to finalize COPY data for {source_schema}.{source_name}")
+    })?;
+    Ok(size)
 }
 
 #[cfg(test)]

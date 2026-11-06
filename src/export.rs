@@ -15,11 +15,11 @@ use chrono::Utc;
 use crate::bundle_io;
 use crate::config::{Config, GeneralConfig, ObjectConfig};
 use crate::crypto;
-use crate::manifest::{Manifest, ManifestObject};
+use crate::manifest::Manifest;
 use crate::parallel_workers;
 use crate::pg;
 
-use object::validate_target_collisions;
+use object::{ExportedObject, validate_target_collisions};
 use plan::build_export_plan;
 use progress::ExportProgress;
 use session::{ExportContext, ExportSession, run_with_snapshot_support};
@@ -66,18 +66,30 @@ pub async fn run(
     bundle_password: Option<&str>,
     source_config: tokio_postgres::Config,
     progress_enabled: bool,
+    startup_color: Option<bool>,
 ) -> Result<()> {
     let operation_started_at = Instant::now();
     let concurrency = resolve_export_concurrency(cli_concurrency, &config.general)?;
     let password = crypto::resolve_bundle_password(bundle_password)?;
     let client = pg::connect(&source_config).await?;
     let export_objects_plan = build_export_plan(&client, config.objects).await?;
-    let progress = ExportProgress::new(export_objects_plan.len(), progress_enabled);
 
     let source_pg_version_num = pg::server_version_num(&client).await?;
     let source_fingerprint = Some(pg::source_fingerprint(&client).await?);
 
-    let scratch = tempfile::tempdir().context("failed to create temporary directory for export")?;
+    let scratch = tempfile::Builder::new()
+        .prefix("pgcopy-export-")
+        .tempdir()
+        .context("failed to create temporary directory for export")?;
+    if let Some(color) = startup_color {
+        crate::startup::print_startup_detail("temp_dir", scratch.path().display(), color);
+        crate::startup::print_startup_detail(
+            "temp_compression",
+            config.general.temp_compression,
+            color,
+        );
+    }
+    let progress = ExportProgress::new(export_objects_plan.len(), progress_enabled);
     std::fs::create_dir_all(scratch.path().join("ddl"))?;
     std::fs::create_dir_all(scratch.path().join("data"))?;
 
@@ -85,6 +97,7 @@ pub async fn run(
         source_config: &source_config,
         scratch_dir: scratch.path(),
         data_format: config.general.data_format,
+        temp_compression: config.general.temp_compression,
         snapshot_id: None,
         retry: config.general.retry,
     };
@@ -103,13 +116,17 @@ pub async fn run(
             } else {
                 export_objects_parallel(context, export_plan, export_progress, concurrency).await?
             };
+            let (objects, data_files): (Vec<_>, Vec<_>) = objects
+                .into_iter()
+                .map(|exported| (exported.manifest, exported.data))
+                .unzip();
             validate_target_collisions(&objects)?;
-            Ok(objects)
+            Ok((objects, data_files))
         },
     )
     .await;
 
-    let manifest_objects = match export_result {
+    let (manifest_objects, data_files) = match export_result {
         Ok(manifest_objects) => manifest_objects,
         Err(error) => {
             progress.finish_with_error(error.as_ref());
@@ -137,6 +154,7 @@ pub async fn run(
             &bundle_scratch_path,
             &bundle_out_path,
             &bundle_manifest,
+            &data_files,
             bundle_password.as_ref(),
         )
     })
@@ -158,7 +176,7 @@ async fn export_objects(
     context: ExportContext<'_>,
     objects: &[ObjectConfig],
     progress: &ExportProgress,
-) -> Result<Vec<ManifestObject>> {
+) -> Result<Vec<ExportedObject>> {
     let mut session = ExportSession::new(context);
     let mut manifest_objects = Vec::with_capacity(objects.len());
 
@@ -169,7 +187,7 @@ async fn export_objects(
 
         match manifest_object {
             Ok(manifest_object) => {
-                progress.set_object_done(&manifest_object, object_started_at.elapsed());
+                progress.set_object_done(&manifest_object.manifest, object_started_at.elapsed());
                 manifest_objects.push(manifest_object);
             }
             Err(error) => {
@@ -187,12 +205,15 @@ async fn export_objects_parallel(
     objects: &[ObjectConfig],
     progress: &ExportProgress,
     concurrency: NonZeroUsize,
-) -> Result<Vec<ManifestObject>> {
-    let mut ordered_objects = vec![None; objects.len()];
+) -> Result<Vec<ExportedObject>> {
+    let mut ordered_objects: Vec<_> = std::iter::repeat_with(|| None)
+        .take(objects.len())
+        .collect();
     for object in objects {
         progress.set_object_running(object);
     }
     let data_format = context.data_format;
+    let temp_compression = context.temp_compression;
     let retry = context.retry;
     let mut workers = parallel_workers::spawn_bucket_workers(objects, concurrency, |tasks| {
         let source_config = context.source_config.clone();
@@ -205,6 +226,7 @@ async fn export_objects_parallel(
                     scratch_dir: &scratch_dir,
                     snapshot_id: snapshot_id.as_deref(),
                     data_format,
+                    temp_compression,
                     retry,
                 },
                 tasks,
@@ -218,8 +240,8 @@ async fn export_objects_parallel(
         "parallel export worker task failed",
         |outcome| {
             for (index, result) in outcome.completed {
-                progress.set_object_done(&result.manifest_object, result.elapsed);
-                ordered_objects[index] = Some(result.manifest_object);
+                progress.set_object_done(&result.exported.manifest, result.elapsed);
+                ordered_objects[index] = Some(result.exported);
             }
 
             if let Some(failure) = outcome.failure {

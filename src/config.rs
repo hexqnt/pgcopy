@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 use crate::env_dsn::ConnectionOverrides;
 use crate::retry::{RetryOptions, RetryPolicy};
+use crate::scratch::TempCompression;
 use crate::select_dsl::{ProjectionKind, SelectDsl};
 use crate::sql::{Identifier, quoted_fq_name};
 use crate::types::{DataFormat, ExportAs};
@@ -31,6 +32,8 @@ pub struct Config {
 /// Общие настройки экспорта.
 #[derive(Debug, Clone)]
 pub struct GeneralConfig {
+    /// Сжатие временных COPY-файлов до сборки bundle.
+    pub(crate) temp_compression: TempCompression,
     /// Политика повторных попыток экспорта одного объекта.
     pub(crate) retry: RetryPolicy,
     /// Формат COPY-потока в bundle.
@@ -167,6 +170,8 @@ struct RawConfig {
 
 #[derive(Debug, Deserialize)]
 struct RawGeneral {
+    #[serde(default)]
+    temp_compression: TempCompression,
     #[serde(flatten)]
     retry: RetryOptions,
     #[serde(default = "default_data_format")]
@@ -181,6 +186,7 @@ struct RawGeneral {
 impl Default for RawGeneral {
     fn default() -> Self {
         Self {
+            temp_compression: TempCompression::default(),
             retry: RetryOptions::default(),
             data_format: default_data_format(),
             compression: default_compression(),
@@ -299,6 +305,7 @@ pub fn load(path: &Path) -> Result<Config> {
 
     Ok(Config {
         general: GeneralConfig {
+            temp_compression: parsed.general.temp_compression,
             retry: parsed.general.retry.resolve(RetryPolicy::default()),
             data_format: parsed.general.data_format,
             consistent_snapshot: parsed.general.consistent_snapshot,
@@ -379,6 +386,10 @@ mod tests {
         assert_eq!(config.objects.len(), 1);
         assert_eq!(config.objects[0].export_as, ExportAs::Table);
         assert!(config.connection.is_none());
+        assert_eq!(
+            config.general.temp_compression,
+            crate::scratch::TempCompression::Zstd
+        );
         assert_eq!(config.general.retry.attempts.get(), 3);
         assert_eq!(
             config.general.retry.delay,
@@ -391,6 +402,20 @@ mod tests {
                 .connection
                 .is_none()
         );
+    }
+
+    #[test]
+    fn parses_temporary_compression_and_rejects_unknown_modes() {
+        for (value, expected) in [
+            ("none", crate::scratch::TempCompression::None),
+            ("zstd", crate::scratch::TempCompression::Zstd),
+        ] {
+            let config = load_config(&format!(
+                "[general]\ntemp_compression = '{value}'\n[[objects]]\nselect = 'select * from public.orders'"
+            )).unwrap();
+            assert_eq!(config.general.temp_compression, expected);
+        }
+        assert!(load_config("[general]\ntemp_compression = 'gzip'\n[[objects]]\nselect = 'select * from public.orders'").is_err());
     }
 
     #[test]

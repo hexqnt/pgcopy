@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::crypto;
 use crate::manifest::{self, Manifest};
+use crate::scratch::ScratchData;
 
 /// Информация о доступе к bundle: зашифрован ли файл и каким паролем его открыть.
 #[derive(Debug, Clone)]
@@ -147,8 +148,12 @@ pub fn write_bundle(
     scratch_dir: &Path,
     out_path: &Path,
     manifest: &Manifest,
+    data_files: &[ScratchData],
     password: Option<&crypto::BundlePassword>,
 ) -> Result<()> {
+    if data_files.len() != manifest.objects.len() {
+        bail!("internal error: scratch data count does not match manifest objects");
+    }
     let output_dir = out_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -176,6 +181,7 @@ pub fn write_bundle(
         scratch_dir,
         &manifest_path,
         manifest,
+        data_files,
         password,
     )?;
 
@@ -198,10 +204,11 @@ fn write_bundle_stream<W: Write>(
     scratch_dir: &Path,
     manifest_path: &Path,
     manifest: &Manifest,
+    data_files: &[ScratchData],
     password: Option<&crypto::BundlePassword>,
 ) -> Result<W> {
     let Some(password) = password else {
-        return write_bundle_archive(writer, scratch_dir, manifest_path, manifest);
+        return write_bundle_archive(writer, scratch_dir, manifest_path, manifest, data_files);
     };
 
     let encryptor =
@@ -209,8 +216,13 @@ fn write_bundle_stream<W: Write>(
     let encrypted_writer = encryptor
         .wrap_output(writer)
         .context("failed to initialize age encryptor for bundle")?;
-    let encrypted_writer =
-        write_bundle_archive(encrypted_writer, scratch_dir, manifest_path, manifest)?;
+    let encrypted_writer = write_bundle_archive(
+        encrypted_writer,
+        scratch_dir,
+        manifest_path,
+        manifest,
+        data_files,
+    )?;
     encrypted_writer
         .finish()
         .context("failed to finalize encrypted bundle stream")
@@ -238,6 +250,7 @@ fn write_bundle_archive<W: Write>(
     scratch_dir: &Path,
     manifest_path: &Path,
     manifest: &Manifest,
+    data_files: &[ScratchData],
 ) -> Result<W> {
     // В архив пишем manifest первым, чтобы его можно было читать потоково
     // без распаковки всего bundle.
@@ -255,8 +268,8 @@ fn write_bundle_archive<W: Write>(
         for object in &manifest.objects {
             append_entry(&mut archive, scratch_dir, &object.ddl_path)?;
         }
-        for object in &manifest.objects {
-            append_entry(&mut archive, scratch_dir, &object.data_path)?;
+        for (object, data) in manifest.objects.iter().zip(data_files) {
+            append_data_entry(&mut archive, scratch_dir, &object.data_path, *data)?;
         }
 
         archive.finish().context("failed to finalize bundle tar")?;
@@ -265,6 +278,34 @@ fn write_bundle_archive<W: Write>(
     encoder
         .finish()
         .context("failed to finalize zstd stream for bundle")
+}
+
+fn append_data_entry<W: Write>(
+    archive: &mut tar::Builder<W>,
+    base_dir: &Path,
+    rel_path: &str,
+    data: ScratchData,
+) -> Result<()> {
+    let ScratchData::Zstd { uncompressed_size } = data else {
+        return append_entry(archive, base_dir, rel_path);
+    };
+
+    let logical_path = base_dir.join(rel_path);
+    let compressed_path = data.path(&logical_path);
+    let input = std::fs::File::open(&compressed_path)
+        .with_context(|| format!("failed to open {}", compressed_path.display()))?;
+    let mut header = tar::Header::new_gnu();
+    header.set_metadata(&input.metadata()?);
+    header.set_size(uncompressed_size);
+    let mut decoder = zstd::stream::Decoder::new(input)?;
+    let mut remaining = (&mut decoder).take(uncompressed_size);
+    archive
+        .append_data(&mut header, rel_path, &mut remaining)
+        .with_context(|| format!("failed to append decompressed {rel_path} to bundle"))?;
+    if remaining.limit() != 0 || decoder.read(&mut [0])? != 0 {
+        bail!("scratch data size mismatch for {rel_path}");
+    }
+    Ok(())
 }
 
 fn append_entry<W: Write>(
@@ -281,11 +322,12 @@ fn append_entry<W: Write>(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, io::Read, path::Path};
 
-    use super::{BundleAccess, open_bundle_reader, write_bundle};
+    use super::{BundleAccess, append_data_entry, open_bundle_reader, write_bundle};
     use crate::manifest::{Manifest, ManifestObject};
     use crate::pg::RelationKind;
+    use crate::scratch::ScratchData;
     use crate::select_dsl::ProjectionKind;
     use crate::types::{DataFormat, ExportAs};
 
@@ -336,8 +378,14 @@ mod tests {
 
         let bundle_path = scratch.path().join("bundle.tar.zst");
         fs::write(&bundle_path, b"obsolete bundle").expect("old bundle must be written");
-        write_bundle(scratch.path(), &bundle_path, &manifest, None)
-            .expect("bundle must be written");
+        write_bundle(
+            scratch.path(),
+            &bundle_path,
+            &manifest,
+            &[ScratchData::Plain; 2],
+            None,
+        )
+        .expect("bundle must be written");
 
         let reader = open_bundle_reader(&bundle_path, &BundleAccess::Plain)
             .expect("bundle must be readable");
@@ -388,8 +436,14 @@ mod tests {
         let bundle_path = scratch.path().join("bundle.tar.zst");
         fs::write(&bundle_path, b"existing bundle").expect("existing bundle must be written");
 
-        let error = write_bundle(scratch.path(), &bundle_path, &manifest, None)
-            .expect_err("missing data file must fail bundle creation");
+        let error = write_bundle(
+            scratch.path(),
+            &bundle_path,
+            &manifest,
+            &[ScratchData::Plain],
+            None,
+        )
+        .expect_err("missing data file must fail bundle creation");
 
         assert!(error.to_string().contains("failed to append"));
         assert_eq!(
@@ -405,5 +459,57 @@ mod tests {
                     .to_string_lossy()
                     .starts_with(".pgcopy-"))
         );
+    }
+
+    #[test]
+    fn compressed_scratch_preserves_tar_paths_sizes_and_payloads() {
+        let scratch = tempfile::tempdir().expect("scratch must be created");
+        let payload = (0..=255)
+            .cycle()
+            .take(2 * 1024 * 1024 + 13)
+            .collect::<Vec<u8>>();
+        for bytes in [payload.as_slice(), &[]] {
+            let logical_path = scratch.path().join("data.copybin");
+            let data = ScratchData::Zstd {
+                uncompressed_size: bytes.len() as u64,
+            };
+            fs::write(
+                data.path(&logical_path),
+                zstd::encode_all(bytes, 3).unwrap(),
+            )
+            .unwrap();
+            let mut archive = tar::Builder::new(Vec::new());
+            append_data_entry(&mut archive, scratch.path(), "data.copybin", data).unwrap();
+            let mut archive =
+                tar::Archive::new(std::io::Cursor::new(archive.into_inner().unwrap()));
+            let mut entries = archive.entries().unwrap();
+            let mut entry = entries.next().unwrap().unwrap();
+            assert_eq!(entry.path().unwrap(), Path::new("data.copybin"));
+            assert_eq!(entry.size(), bytes.len() as u64);
+            let mut restored = Vec::new();
+            entry.read_to_end(&mut restored).unwrap();
+            assert_eq!(restored, bytes);
+            assert!(entries.next().is_none());
+        }
+    }
+
+    #[test]
+    fn rejects_incomplete_or_incorrectly_sized_compressed_scratch() {
+        let scratch = tempfile::tempdir().unwrap();
+        let logical_path = scratch.path().join("data.copybin");
+        let compressed = zstd::encode_all(&b"COPY data"[..], 3).unwrap();
+        for (bytes, size) in [
+            (compressed.as_slice(), 0),
+            (compressed.as_slice(), 8),
+            (compressed.as_slice(), 10),
+            (&compressed[..compressed.len() - 1], 9),
+        ] {
+            let data = ScratchData::Zstd {
+                uncompressed_size: size,
+            };
+            fs::write(data.path(&logical_path), bytes).unwrap();
+            let mut archive = tar::Builder::new(Vec::new());
+            assert!(append_data_entry(&mut archive, scratch.path(), "data.copybin", data).is_err());
+        }
     }
 }
