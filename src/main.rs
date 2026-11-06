@@ -13,6 +13,7 @@ mod parallel_workers;
 mod pg;
 mod pgpass;
 mod progress;
+mod retry;
 mod select_dsl;
 mod sql;
 mod startup;

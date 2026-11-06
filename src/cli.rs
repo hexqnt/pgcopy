@@ -85,6 +85,8 @@ Encrypted bundle:\n\
             help = "Export concurrency (priority: CLI --concurrency > config general.concurrency > PGCOPY_CONCURRENCY env)"
         )]
         concurrency: Option<NonZeroUsize>,
+        #[command(flatten)]
+        retry: crate::retry::RetryOptions,
         #[arg(
             long,
             value_name = "PASSWORD",
@@ -271,6 +273,43 @@ mod tests {
                 ..
             } => (no_format, statistics),
             _ => panic!("expected describe command"),
+        }
+    }
+
+    #[test]
+    fn export_parses_retry_overrides_and_rejects_invalid_values() {
+        let args = [
+            "pgcopy",
+            "export",
+            "--config",
+            "config.toml",
+            "--out",
+            "bundle.tar.zst",
+        ];
+        let cli = Cli::try_parse_from(args.into_iter().chain([
+            "--attempts",
+            "5",
+            "--retry-delay-ms",
+            "0",
+            "--attempt-timeout-ms",
+            "1500",
+        ]))
+        .expect("retry flags must parse");
+        let Commands::Export { retry, .. } = cli.command else {
+            panic!("expected export");
+        };
+        let policy = retry.resolve(crate::retry::RetryPolicy::default());
+        assert_eq!(policy.attempts.get(), 5);
+        assert!(policy.delay.is_zero());
+        assert_eq!(policy.timeout, Some(std::time::Duration::from_millis(1500)));
+        for arguments in [
+            ["--attempts", "0"],
+            ["--attempts", "-1"],
+            ["--retry-delay-ms", "-1"],
+            ["--attempt-timeout-ms", "-1"],
+            ["--attempt-timeout-ms", "invalid"],
+        ] {
+            assert!(Cli::try_parse_from(args.into_iter().chain(arguments)).is_err());
         }
     }
 

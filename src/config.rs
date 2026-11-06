@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::env_dsn::ConnectionOverrides;
+use crate::retry::{RetryOptions, RetryPolicy};
 use crate::select_dsl::{ProjectionKind, SelectDsl};
 use crate::sql::{Identifier, quoted_fq_name};
 use crate::types::{DataFormat, ExportAs};
@@ -30,6 +31,8 @@ pub struct Config {
 /// Общие настройки экспорта.
 #[derive(Debug, Clone)]
 pub struct GeneralConfig {
+    /// Политика повторных попыток экспорта одного объекта.
+    pub(crate) retry: RetryPolicy,
     /// Формат COPY-потока в bundle.
     pub data_format: DataFormat,
     /// Включает REPEATABLE READ snapshot для согласованного чтения.
@@ -164,6 +167,8 @@ struct RawConfig {
 
 #[derive(Debug, Deserialize)]
 struct RawGeneral {
+    #[serde(flatten)]
+    retry: RetryOptions,
     #[serde(default = "default_data_format")]
     data_format: DataFormat,
     #[serde(default = "default_compression")]
@@ -176,6 +181,7 @@ struct RawGeneral {
 impl Default for RawGeneral {
     fn default() -> Self {
         Self {
+            retry: RetryOptions::default(),
             data_format: default_data_format(),
             compression: default_compression(),
             consistent_snapshot: default_true(),
@@ -293,6 +299,7 @@ pub fn load(path: &Path) -> Result<Config> {
 
     Ok(Config {
         general: GeneralConfig {
+            retry: parsed.general.retry.resolve(RetryPolicy::default()),
             data_format: parsed.general.data_format,
             consistent_snapshot: parsed.general.consistent_snapshot,
             concurrency,
@@ -372,12 +379,48 @@ mod tests {
         assert_eq!(config.objects.len(), 1);
         assert_eq!(config.objects[0].export_as, ExportAs::Table);
         assert!(config.connection.is_none());
+        assert_eq!(config.general.retry.attempts.get(), 3);
+        assert_eq!(
+            config.general.retry.delay,
+            std::time::Duration::from_secs(1)
+        );
+        assert_eq!(config.general.retry.timeout, None);
         assert!(
             connection_config("")
                 .expect("empty connection must parse")
                 .connection
                 .is_none()
         );
+    }
+
+    #[test]
+    fn parses_retry_settings_and_rejects_invalid_values() {
+        let config = load_config("[general]\nattempts = 4\nretry_delay_ms = 25\nattempt_timeout_ms = 200\n[[objects]]\nselect = 'select * from public.orders'").expect("retry config must parse");
+        assert_eq!(config.general.retry.attempts.get(), 4);
+        assert_eq!(
+            config.general.retry.delay,
+            std::time::Duration::from_millis(25)
+        );
+        assert_eq!(
+            config.general.retry.timeout,
+            Some(std::time::Duration::from_millis(200))
+        );
+        for setting in [
+            "attempts = 0",
+            "attempts = -1",
+            "attempts = 'three'",
+            "retry_delay_ms = -1",
+            "attempt_timeout_ms = -1",
+            "attempt_timeout_ms = 4294967296",
+        ] {
+            assert!(
+                load_config(&format!(
+                    "[general]\n{setting}\n[[objects]]\nselect = 'select * from public.orders'"
+                ))
+                .is_err(),
+                "must reject {setting}"
+            );
+        }
     }
 
     #[test]

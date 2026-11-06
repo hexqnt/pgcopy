@@ -26,12 +26,20 @@ tokio = { version = "1.54.1", features = [
     "rt-multi-thread",
     "fs",
     "io-util",
+    "time",
 ] }
 tokio-postgres = "0.7.18"
-toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
+toml = { version = "1.2.0", default-features = false, features = [
+    "parse",
+    "serde",
+    "std",
+] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
 zstd = "0.14.3"
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["test-util"] }
 
 [lints]
 workspace = true

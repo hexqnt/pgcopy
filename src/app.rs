@@ -40,6 +40,16 @@ fn print_dry_run_export(
     startup::print_export_startup_details(config_path, out_path, source_config, true, color);
     startup::print_startup_detail("objects", cfg.objects.len(), color);
     startup::print_startup_detail("concurrency", concurrency, color);
+    startup::print_startup_detail("attempts", cfg.general.retry.attempts, color);
+    startup::print_startup_detail("retry_delay_ms", cfg.general.retry.delay.as_millis(), color);
+    startup::print_startup_detail(
+        "attempt_timeout_ms",
+        cfg.general
+            .retry
+            .timeout
+            .map_or(0, |timeout| timeout.as_millis()),
+        color,
+    );
     let encrypted = bundle_password.is_some();
     startup::print_startup_detail("encrypted", if encrypted { "yes" } else { "no" }, color);
 
@@ -160,10 +170,12 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             config: config_path,
             out,
             concurrency,
+            retry,
             password,
             connection,
         } => {
-            let cfg = config::load(&config_path)?;
+            let mut cfg = config::load(&config_path)?;
+            cfg.general.retry = retry.resolve(cfg.general.retry);
             let dsn_overrides = connection.into_overrides();
             let source_config = env_dsn::build(&dsn_overrides, cfg.connection.as_ref())?;
 

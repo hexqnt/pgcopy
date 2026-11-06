@@ -11,7 +11,6 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
-use tempfile::TempDir;
 
 use crate::bundle_io;
 use crate::config::{Config, GeneralConfig, ObjectConfig};
@@ -19,12 +18,11 @@ use crate::crypto;
 use crate::manifest::{Manifest, ManifestObject};
 use crate::parallel_workers;
 use crate::pg;
-use crate::types::DataFormat;
 
-use object::{export_object, validate_target_collisions};
+use object::validate_target_collisions;
 use plan::build_export_plan;
 use progress::ExportProgress;
-use session::run_with_snapshot_support;
+use session::{ExportContext, ExportSession, run_with_snapshot_support};
 use worker::export_worker;
 
 pub(crate) fn resolve_export_concurrency(
@@ -83,31 +81,27 @@ pub async fn run(
     std::fs::create_dir_all(scratch.path().join("ddl"))?;
     std::fs::create_dir_all(scratch.path().join("data"))?;
 
+    let context = ExportContext {
+        source_config: &source_config,
+        scratch_dir: scratch.path(),
+        data_format: config.general.data_format,
+        snapshot_id: None,
+        retry: config.general.retry,
+    };
+    let export_plan = &export_objects_plan;
+    let export_progress = &progress;
     let export_result = run_with_snapshot_support(
         &client,
         config.general.consistent_snapshot,
-        concurrency.get() > 1,
-        |snapshot_id| async {
+        |snapshot_id| async move {
+            let context = ExportContext {
+                snapshot_id: snapshot_id.as_deref(),
+                ..context
+            };
             let objects = if concurrency.get() == 1 {
-                export_objects(
-                    &client,
-                    &export_objects_plan,
-                    config.general.data_format,
-                    &scratch,
-                    &progress,
-                )
-                .await?
+                export_objects(context, export_plan, export_progress).await?
             } else {
-                export_objects_parallel(
-                    &source_config,
-                    &export_objects_plan,
-                    config.general.data_format,
-                    &scratch,
-                    &progress,
-                    concurrency,
-                    snapshot_id,
-                )
-                .await?
+                export_objects_parallel(context, export_plan, export_progress, concurrency).await?
             };
             validate_target_collisions(&objects)?;
             Ok(objects)
@@ -161,20 +155,17 @@ pub async fn run(
 }
 
 async fn export_objects(
-    client: &tokio_postgres::Client,
+    context: ExportContext<'_>,
     objects: &[ObjectConfig],
-    data_format: DataFormat,
-    scratch: &TempDir,
     progress: &ExportProgress,
 ) -> Result<Vec<ManifestObject>> {
+    let mut session = ExportSession::new(context);
     let mut manifest_objects = Vec::with_capacity(objects.len());
 
     for (index, object) in objects.iter().enumerate() {
         progress.set_object_running(object);
         let object_started_at = Instant::now();
-        let manifest_object = export_object(client, scratch.path(), index, object, data_format)
-            .await
-            .with_context(|| format!("export object {} failed", object.source_label()));
+        let manifest_object = session.export(index, object).await;
 
         match manifest_object {
             Ok(manifest_object) => {
@@ -192,30 +183,31 @@ async fn export_objects(
 }
 
 async fn export_objects_parallel(
-    source_config: &tokio_postgres::Config,
+    context: ExportContext<'_>,
     objects: &[ObjectConfig],
-    data_format: DataFormat,
-    scratch: &TempDir,
     progress: &ExportProgress,
     concurrency: NonZeroUsize,
-    snapshot_id: Option<String>,
 ) -> Result<Vec<ManifestObject>> {
     let mut ordered_objects = vec![None; objects.len()];
     for object in objects {
         progress.set_object_running(object);
     }
+    let data_format = context.data_format;
+    let retry = context.retry;
     let mut workers = parallel_workers::spawn_bucket_workers(objects, concurrency, |tasks| {
-        let source_config = source_config.clone();
-        let scratch_dir = scratch.path().to_path_buf();
-        let snapshot_id = snapshot_id.clone();
-        // Каждый worker получает свой connection и обрабатывает свой bucket.
+        let source_config = context.source_config.clone();
+        let scratch_dir = context.scratch_dir.to_path_buf();
+        let snapshot_id = context.snapshot_id.map(str::to_owned);
         async move {
             export_worker(
-                &source_config,
-                &scratch_dir,
+                ExportContext {
+                    source_config: &source_config,
+                    scratch_dir: &scratch_dir,
+                    snapshot_id: snapshot_id.as_deref(),
+                    data_format,
+                    retry,
+                },
                 tasks,
-                data_format,
-                snapshot_id.as_deref(),
             )
             .await
         }

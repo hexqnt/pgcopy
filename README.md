@@ -125,6 +125,9 @@ Run `pgcopy --help` or `pgcopy <command> --help` for the complete CLI reference.
 - `--config`: export configuration file.
 - `--out`: destination bundle path.
 - `--concurrency N`: number of objects exported concurrently. Resolution order: CLI, `general.concurrency`, `PGCOPY_CONCURRENCY`, then `1`.
+- `--attempts N`: total attempts per object, including the first; defaults to `3`; `1` disables retries.
+- `--retry-delay-ms MS`: delay between attempts in milliseconds; defaults to `1000`; `0` is allowed.
+- `--attempt-timeout-ms MS`: timeout per attempt in milliseconds, including connection setup and export; defaults to `0` (unlimited).
 - `--password`: bundle encryption passphrase; falls back to the `PASSWORD` environment variable.
 
 ### `import`
@@ -206,6 +209,9 @@ data_format = "binary"
 compression = "zstd"
 consistent_snapshot = true
 concurrency = 4
+attempts = 3
+retry_delay_ms = 1000
+attempt_timeout_ms = 0
 
 [[objects]]
 select = "select * from public.orders"
@@ -226,6 +232,20 @@ export_as = "view"
 - `compression`: currently `zstd`.
 - `consistent_snapshot`: use a single consistent database snapshot; defaults to `true`.
 - `concurrency`: number of concurrent export workers; defaults to `1`.
+- `attempts`: total export attempts per object; defaults to `3`, minimum `1`.
+- `retry_delay_ms`: fixed delay between attempts in milliseconds; defaults to `1000`.
+- `attempt_timeout_ms`: timeout per attempt in milliseconds; defaults to `0`, unlimited.
+
+These three settings resolve in this order: CLI → TOML → default. For example:
+
+```bash
+pgcopy export --config ./config.toml --out ./bundle.tar.zst \
+  --attempts 5 --retry-delay-ms 2000 --attempt-timeout-ms 60000
+```
+
+An error or timeout restarts the current object's entire export with a new connection and separate temporary files. Retries cover connection and object export errors, including SQL and file write errors. Completed objects are retained. These settings apply to sequential and parallel export. With `consistent_snapshot = true`, every attempt uses the original snapshot; with `false`, a new attempt may see changed data.
+
+Each failed attempt before a retry emits a warning with the object name, attempt number, and cause. Once attempts are exhausted, export fails, remaining workers are cancelled, and no new bundle is created. Export planning, the initial coordinator connection, and bundle packing are not retried. Resuming across program restarts is not supported.
 
 ### Objects
 
